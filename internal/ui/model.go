@@ -18,9 +18,9 @@ import (
 
 const (
 	// paneBoxOverhead is the top+bottom border lines of the full-box pane
-	// frame; paneTitleRows is the path-title line rendered as the first
-	// line inside that box (see view.go) — both are vertical space spent
-	// before any list row is drawn.
+	// frame; paneTitleRows is the path-title row rendered above that box
+	// (see view.go) — both are vertical space spent before any list row
+	// is drawn.
 	paneBoxOverhead = 2
 	paneTitleRows   = 1
 

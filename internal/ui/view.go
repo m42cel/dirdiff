@@ -38,30 +38,41 @@ func (m Model) View() string {
 	}
 
 	listHeight := m.listAreaHeight()
-	interiorHeight := paneTitleRows + listHeight
 
+	// The path title sits above each pane's box (its own row, not the
+	// box's first content line) so the box's border encloses only the
+	// entry list. titleCellStyle's left padding (2) approximates the
+	// box's own border(1)+padding(1) offset below it, so the title text
+	// still lines up roughly over where row text starts inside the box;
+	// its content width is trimmed by that same 2 columns, matching the
+	// leftWidth/rightWidth truncate() calls below.
+	titleCellStyle := lipgloss.NewStyle().PaddingLeft(2)
 	leftTitle := titleStyle.Render(truncate(displayPath(m.sess.LeftRoot, m.cursorDir.RelPath), leftWidth))
 	rightTitle := titleStyle.Render(truncate(displayPath(m.sess.RightRoot, m.cursorDir.RelPath), rightWidth))
+	titleRow := lipgloss.JoinHorizontal(lipgloss.Top,
+		titleCellStyle.Width(leftWidth+paneOverhead).Render(leftTitle),
+		lipgloss.NewStyle().Width(gutterWidth).Render(""),
+		titleCellStyle.Width(rightWidth+paneOverhead).Render(rightTitle),
+	)
 
 	leftRows, gutterRows, rightRows := m.renderPanes(listHeight)
-	leftContent := strings.Join(append([]string{leftTitle}, leftRows...), "\n")
-	rightContent := strings.Join(append([]string{rightTitle}, rightRows...), "\n")
+	leftContent := strings.Join(leftRows, "\n")
+	rightContent := strings.Join(rightRows, "\n")
 	// The gutter has no border of its own, but the panes on either side
 	// do — their top border line consumes one row that the gutter must
-	// blank-pad for, on top of the blank line that lines up with the
-	// title row, or every glyph below renders one row too high.
-	gutterContent := strings.Join(append([]string{"", ""}, gutterRows...), "\n")
+	// blank-pad for, or every glyph below renders one row too high.
+	gutterContent := strings.Join(append([]string{""}, gutterRows...), "\n")
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		paneStyle.Width(leftWidth).Height(interiorHeight).Render(leftContent),
-		gutterStyle.Height(interiorHeight+1).Render(gutterContent),
-		paneStyle.Width(rightWidth).Height(interiorHeight).Render(rightContent),
+		paneStyle.Width(leftWidth).Height(listHeight).Render(leftContent),
+		gutterStyle.Height(listHeight+1).Render(gutterContent),
+		paneStyle.Width(rightWidth).Height(listHeight).Render(rightContent),
 	)
 
 	details := detailsStyle.Width(m.width).Height(detailsContentLines).Render(m.renderDetails())
 	status := m.renderStatusBar()
 
-	return body + "\n" + details + "\n" + status
+	return titleRow + "\n" + body + "\n" + details + "\n" + status
 }
 
 // renderPanes returns the visible lines for both panes plus the status

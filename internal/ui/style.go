@@ -19,9 +19,9 @@ var (
 	paneStyle = lipgloss.NewStyle().Padding(0, 1).
 			BorderStyle(lipgloss.NormalBorder())
 
-	// titleStyle marks the path title, which is the first line rendered
-	// inside each pane box (not a separate header row) so it always
-	// lines up with the box's own padding/border.
+	// titleStyle marks the path title, rendered in its own row above
+	// each pane's box (see titleCellStyle in view.go) so the box's
+	// border encloses only the entry list, not the path.
 	titleStyle = lipgloss.NewStyle().Bold(true).Underline(true)
 
 	gutterStyle = lipgloss.NewStyle().Width(gutterWidth).Align(lipgloss.Center)

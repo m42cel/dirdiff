@@ -32,9 +32,9 @@ type Session struct {
 // New creates a Session, starts its worker pools, and enqueues the
 // initial listing of the root directory at High priority so the first
 // level is shown as soon as possible (SPEC.md §8.1). If autoLevel is not
-// NotCompared, the whole tree is armed to auto-compare at that level in
-// the background at Low priority as listing discovers it (SPEC.md
-// §2.1's --compare-level flag).
+// NotCompared, the whole tree is armed to auto-compare recursively at that
+// level in the background at Low priority as listing discovers it
+// (SPEC.md §2.1's --compare-level flag, size-date by default).
 func New(leftRoot, rightRoot string, workers int, autoLevel diffmodel.CompareLevel) *Session {
 	root := tree.NewRoot()
 	s := &Session{

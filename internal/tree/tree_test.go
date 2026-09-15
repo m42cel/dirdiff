@@ -37,7 +37,7 @@ func TestApplyCompareResultMonotonic(t *testing.T) {
 	n := &Node{Type: diffmodel.File}
 	ApplyCompareResult(n, diffmodel.Checksum, diffmodel.Differs, nil, nil)
 	// A shallower, stale result arriving afterward must not downgrade the display.
-	ApplyCompareResult(n, diffmodel.Size, diffmodel.Same, nil, nil)
+	ApplyCompareResult(n, diffmodel.SizeMtime, diffmodel.Same, nil, nil)
 
 	if n.Level != diffmodel.Checksum || n.Result != diffmodel.Differs {
 		t.Fatalf("Level=%v Result=%v; want Checksum/Differs to survive the shallower re-trigger", n.Level, n.Result)
@@ -48,7 +48,7 @@ func TestApplyCompareResultAlwaysRecordsStat(t *testing.T) {
 	n := &Node{Type: diffmodel.File}
 	ApplyCompareResult(n, diffmodel.Checksum, diffmodel.Same, nil, &diffmodel.StatInfo{LeftSize: 1, RightSize: 1})
 	// A shallower re-trigger shouldn't touch Level/Result but should still refresh stat info.
-	ApplyCompareResult(n, diffmodel.Size, diffmodel.Same, nil, &diffmodel.StatInfo{LeftSize: 2, RightSize: 2})
+	ApplyCompareResult(n, diffmodel.SizeMtime, diffmodel.Same, nil, &diffmodel.StatInfo{LeftSize: 2, RightSize: 2})
 
 	if !n.HaveStat || n.LeftSize != 2 {
 		t.Fatalf("stat not updated: HaveStat=%v LeftSize=%d", n.HaveStat, n.LeftSize)

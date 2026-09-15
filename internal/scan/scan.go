@@ -141,13 +141,6 @@ func DoCompare(job CompareJob) CompareOutcome {
 	}
 
 	switch job.Level {
-	case diffmodel.Size:
-		result := diffmodel.Differs
-		if leftInfo.Size() == rightInfo.Size() {
-			result = diffmodel.Same
-		}
-		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: result, Stat: stat}
-
 	case diffmodel.SizeMtime:
 		result := diffmodel.Differs
 		if leftInfo.Size() == rightInfo.Size() && sameMtime(leftInfo.ModTime(), rightInfo.ModTime()) {

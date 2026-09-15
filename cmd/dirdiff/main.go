@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	compareLevelFlag := flag.String("compare-level", "", "initial comparison level to auto-apply in the background: size|size-mtime|checksum")
+	levelFlag := flag.String("level", "metadata", "initial comparison level to auto-apply recursively in the background: metadata|content|none (none = existence/listing only)")
 	workers := flag.Int("workers", runtime.GOMAXPROCS(0), "worker pool size for listing and comparison")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] <left-dir> <right-dir>\n", os.Args[0])
@@ -34,7 +34,7 @@ func main() {
 	// header and doesn't produce "foo//sub" once RelPath is appended.
 	leftDir, rightDir := filepath.Clean(flag.Arg(0)), filepath.Clean(flag.Arg(1))
 
-	autoLevel, err := parseCompareLevel(*compareLevelFlag)
+	autoLevel, err := parseLevel(*levelFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dirdiff:", err)
 		os.Exit(1)
@@ -62,18 +62,16 @@ func main() {
 	}
 }
 
-func parseCompareLevel(level string) (diffmodel.CompareLevel, error) {
+func parseLevel(level string) (diffmodel.CompareLevel, error) {
 	switch level {
-	case "":
+	case "none":
 		return diffmodel.NotCompared, nil
-	case "size":
-		return diffmodel.Size, nil
-	case "size-mtime":
+	case "metadata":
 		return diffmodel.SizeMtime, nil
-	case "checksum":
+	case "content":
 		return diffmodel.Checksum, nil
 	default:
-		return 0, fmt.Errorf("invalid --compare-level %q (want size|size-mtime|checksum)", level)
+		return 0, fmt.Errorf("invalid --level %q (want metadata|content|none)", level)
 	}
 }
 

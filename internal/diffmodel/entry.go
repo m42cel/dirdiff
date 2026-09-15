@@ -32,11 +32,17 @@ const (
 // Existence itself is not a level (SPEC.md §5.1) — it's implied once an
 // entry's Presence is known from listing. Values are ordered shallowest
 // to deepest so callers can compare levels with plain <, <=, etc.
+//
+// There are only two triggered levels: SizeMtime (size AND mtime checked
+// together as one verdict — a file only counts as "same" at this level if
+// both match) and Checksum. Size and mtime were split into two levels in
+// an earlier design; they were merged because a same-size/different-mtime
+// (or vice versa) result was never actionable as its own distinct level in
+// practice.
 type CompareLevel int
 
 const (
 	NotCompared CompareLevel = iota
-	Size
 	SizeMtime
 	Checksum
 )
@@ -63,7 +69,7 @@ type ListedChild struct {
 }
 
 // StatInfo holds size/mtime metadata for both sides of a compared entry,
-// populated once a Size or SizeMtime (or deeper) comparison has run.
+// populated once a SizeMtime (or deeper) comparison has run.
 type StatInfo struct {
 	LeftSize, RightSize   int64
 	LeftMtime, RightMtime time.Time

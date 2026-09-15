@@ -29,7 +29,7 @@ dirdiff [flags] <left-dir> <right-dir>
 
 | Flag | Description |
 |---|---|
-| `--compare-level=<level>` | Initial default comparison level to auto-apply as results come in. One of `size`, `size-mtime`, `checksum`. Default: no auto-compare beyond existence (user triggers levels manually). |
+| `--level=<level>` | Initial comparison level to auto-apply recursively across the whole tree as results come in. One of `metadata`, `content`, `none`. Default: `metadata`. `none` opts back into existence-only (listing/matching, no auto-compare). |
 | `--workers=<n>` | Overrides the concurrency of *both* worker pools (listing and checksum). Default: `GOMAXPROCS`. |
 
 No other flags in v1 (no filtering, no hidden-file toggle — dotfiles are
@@ -131,8 +131,11 @@ aligned.
 
 A panel (e.g. bottom of screen) shows full metadata for the row under the
 cursor, once known: size, mtime, and comparison level/result for both
-sides. Populates progressively as background jobs resolve that data (shows
-"—" / a pending marker for fields not yet fetched).
+sides. For a file/symlink row, it names the deepest level actually run so
+far (e.g. "metadata" vs. "content") so the user can tell a cheap
+size+date match from an actual byte-for-byte verification. Populates
+progressively as background jobs resolve that data (shows "—" / a pending
+marker for fields not yet fetched).
 
 ### 4.3 One-sided navigation
 
@@ -173,9 +176,11 @@ v1.
 | Level | What it checks | Cost |
 |---|---|---|
 | *(baseline, automatic)* Existence | Entry present on both sides, by name+type | Free — a byproduct of directory listing, not a triggered action |
-| Size | File size equal (one `stat()`/`lstat()` per file) | Cheap, one syscall per file |
-| Size + mtime | File size **and** modification time equal (same syscall as Size, but both fields must match) | Same syscall cost as Size, kept as a distinct level because it's a stricter/different verdict |
-| Checksum | Streaming byte-for-byte comparison, reading both files in parallel chunks and short-circuiting on first difference | Expensive — full (or partial, on early mismatch) file read of both sides |
+| Metadata | File size **and** modification time equal (one `stat()`/`lstat()` per file; both fields must match) | Cheap, one syscall per file |
+| Content | Streaming byte-for-byte comparison, reading both files in parallel chunks and short-circuiting on first difference (not a hash/checksum — a direct read of both sides) | Expensive — full (or partial, on early mismatch) file read of both sides |
+
+Size and mtime are a single combined level ("metadata"), not two separate
+ones — a file only counts as "same" at this level if both match.
 
 Existence is never a user-triggered action — it's simply the state every
 row is in immediately once its parent directory's listing has completed on
@@ -183,12 +188,16 @@ both sides.
 
 ### 5.2 Triggering
 
-- Comparison levels are triggered per-directory, for the **currently
-  displayed directory's visible entries only**, via labeled keys (e.g. `2`
-  = size, `3` = size+mtime, `4` = checksum).
-- A separate modifier/key (e.g. `Shift+2/3/4`, or a dedicated `R` prefix)
-  queues the same level **recursively** for the entire subtree rooted at
-  the current directory, feeding the background priority queue.
+- Two persistent settings, changed independently of triggering and
+  remembered across triggers: the **compare level** (metadata or content,
+  default metadata) and the **recursive** toggle (default on). `l`
+  switches the compare level; `r` toggles recursive on/off. Neither key
+  enqueues any work by itself.
+- `c` runs a comparison at the current level/recursive setting, for the
+  **currently displayed directory's visible entries**. If recursive is on,
+  this queues the same level for the entire subtree rooted at the current
+  directory instead of just its direct children, feeding the background
+  priority queue.
 - Triggering a level on a single selected file row (not a directory)
   compares just that file.
 
@@ -224,7 +233,7 @@ limited-color terminals.
 | Missing on right (left-only) | `←` (points to the side it's on) | yellow |
 | Missing on left (right-only) | `→` (points to the side it's on) | yellow |
 | Error / unreadable | `!` | magenta |
-| Pending / in-progress | spinner | gray/blue |
+| Pending / in-progress | animated `.` → `..` → `...` | gray/blue |
 | Unknown (not yet compared) | `·` (dim) | dim/gray |
 | Directory rollup: contains differences | e.g. bold `≠` | red |
 | Directory rollup: clean so far | e.g. dim `=` | green |
@@ -315,10 +324,9 @@ plus the full reference via `?` (§4.5).
 | `↑` / `↓` | Move cursor within current directory listing (both panes move together) |
 | `→` / `Enter` | Navigate into directory under cursor (both panes descend together; one-sided case per §4.3) |
 | `←` / `Backspace` | Navigate to parent directory (both panes ascend together) |
-| `2` | Compare current directory's visible entries: size |
-| `3` | Compare current directory's visible entries: size + mtime |
-| `4` | Compare current directory's visible entries: checksum |
-| `Shift+2` / `Shift+3` / `Shift+4` | Same as above, but recursive for the whole subtree |
+| `l` | Switch the persistent compare-level setting: metadata (size+date) ↔ content (byte-for-byte) (remembered until changed again) |
+| `r` | Toggle the persistent recursive setting on/off (remembered; default on) |
+| `c` | Compare current directory's visible entries at the current level/recursive setting |
 | `n` / `N` | Jump to next / previous entry in the current directory whose status isn't "same" (only considers entries already compared at some level) |
 | `X` / `Esc` | Cancel/clear all pending (not-yet-started) queued comparison jobs |
 | `?` | Toggle full keybinding help overlay |

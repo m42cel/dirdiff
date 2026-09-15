@@ -127,7 +127,7 @@ func TestDoListMissingSideIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestDoCompareSize(t *testing.T) {
+func TestDoCompareSizeMtimeDetectsSizeDifference(t *testing.T) {
 	left := t.TempDir()
 	right := t.TempDir()
 	mustWrite(t, filepath.Join(left, "f"), "hello")
@@ -135,7 +135,7 @@ func TestDoCompareSize(t *testing.T) {
 
 	out := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "f"), RightAbs: filepath.Join(right, "f"),
-		Type: diffmodel.File, Level: diffmodel.Size,
+		Type: diffmodel.File, Level: diffmodel.SizeMtime,
 	})
 	if out.Result != diffmodel.Differs {
 		t.Fatalf("Result = %v; want Differs (sizes differ)", out.Result)
@@ -160,20 +160,14 @@ func TestDoCompareSizeMtimeDetectsMtimeOnlyDifference(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sizeOut := DoCompare(CompareJob{
-		LeftAbs: filepath.Join(left, "f"), RightAbs: filepath.Join(right, "f"),
-		Type: diffmodel.File, Level: diffmodel.Size,
-	})
-	if sizeOut.Result != diffmodel.Same {
-		t.Fatalf("Size level: Result = %v; want Same (equal sizes)", sizeOut.Result)
-	}
-
-	mtimeOut := DoCompare(CompareJob{
+	// Sizes are equal but mtimes differ — the merged size+mtime level must
+	// catch this even though a size-only check wouldn't.
+	out := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "f"), RightAbs: filepath.Join(right, "f"),
 		Type: diffmodel.File, Level: diffmodel.SizeMtime,
 	})
-	if mtimeOut.Result != diffmodel.Differs {
-		t.Fatalf("SizeMtime level: Result = %v; want Differs (mtimes differ)", mtimeOut.Result)
+	if out.Result != diffmodel.Differs {
+		t.Fatalf("Result = %v; want Differs (mtimes differ)", out.Result)
 	}
 }
 
@@ -244,7 +238,7 @@ func TestDoCompareSymlinkComparesTargetString(t *testing.T) {
 	}
 	out := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "link"), RightAbs: filepath.Join(right, "link"),
-		Type: diffmodel.Symlink, Level: diffmodel.Size, // level should be irrelevant for symlinks
+		Type: diffmodel.Symlink, Level: diffmodel.SizeMtime, // level should be irrelevant for symlinks
 	})
 	if out.Result != diffmodel.Same {
 		t.Fatalf("Result = %v; want Same (identical targets)", out.Result)
@@ -272,7 +266,7 @@ func TestDoCompareUnreadableFileIsError(t *testing.T) {
 	// left/f deliberately does not exist -> Lstat fails.
 	out := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "f"), RightAbs: filepath.Join(right, "f"),
-		Type: diffmodel.File, Level: diffmodel.Size,
+		Type: diffmodel.File, Level: diffmodel.SizeMtime,
 	})
 	if out.Result != diffmodel.CompareError {
 		t.Fatalf("Result = %v; want CompareError", out.Result)

@@ -9,8 +9,9 @@ directories immediately, then scans deeper directories breadth-first in
 the background without blocking the UI. Navigating into a directory
 reprioritizes the background scan toward what you're looking at.
 Comparing file contents is opt-in and explicit — you choose how thorough
-a comparison to run (size, size+mtime, or a full byte-for-byte checksum),
-and where (just the current directory, or recursively).
+a comparison to run (metadata, i.e. size + mtime, or a full byte-for-byte
+content comparison), and where (just the current directory, or
+recursively).
 
 See [SPEC.md](SPEC.md) for the full design and rationale.
 
@@ -44,7 +45,7 @@ dirdiff [flags] <left-dir> <right-dir>
 
 | Flag | Description |
 |---|---|
-| `--compare-level=<level>` | Auto-apply a comparison level (`size`, `size-mtime`, or `checksum`) to the whole tree in the background as it's discovered, instead of comparing manually. |
+| `--level=<level>` | Auto-apply a comparison level (`metadata`, `content`, or `none`) to the whole tree recursively in the background as it's discovered, instead of comparing manually. Default: `metadata`. |
 | `--workers=<n>` | Size of the listing and comparison worker pools (default: number of CPUs). |
 
 ### Keybindings
@@ -56,10 +57,9 @@ dirdiff [flags] <left-dir> <right-dir>
 | `Home` / `End` | Jump to first / last entry |
 | `→` / `Enter` | Open the directory under the cursor (both panes navigate together) |
 | `←` / `Backspace` | Go up to the parent directory |
-| `2` | Compare current directory's files: size only |
-| `3` | Compare current directory's files: size + modification time |
-| `4` | Compare current directory's files: full checksum |
-| `r` | Arm recursive mode — the next `2`/`3`/`4` compares the whole subtree instead of just the current directory |
+| `l` | Switch the compare level — metadata (size + mtime) ↔ content (byte-for-byte) — remembered until changed again |
+| `r` | Toggle recursive mode on/off — remembered, default on |
+| `c` | Compare the current directory's files at the current level/recursive setting |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
 | `x` | Cancel all pending (not yet started) comparisons |
 | `?` | Toggle the help overlay |
@@ -67,8 +67,8 @@ dirdiff [flags] <left-dir> <right-dir>
 
 A directory that exists on only one side is still navigable — the
 missing side shows a static placeholder. Existence is shown as soon as a
-directory is listed; size/mtime/checksum comparisons only run once you
-trigger them.
+directory is listed; metadata/content comparisons only run once you
+trigger them with `c`.
 
 ### Status glyphs
 
@@ -82,7 +82,7 @@ legible without relying on color:
 | `→` | Missing on the right |
 | `←` | Missing on the left |
 | `!` | Error (e.g. permission denied) |
-| `…` | Pending — queued or currently being compared |
+| `.` / `..` / `...` | Pending — queued or currently being compared (animated) |
 | `·` | Not yet compared |
 
 Directories additionally roll up the worst status found anywhere in

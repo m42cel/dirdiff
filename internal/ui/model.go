@@ -6,6 +6,8 @@
 package ui
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
@@ -19,36 +21,69 @@ const (
 	// frame; paneTitleRows is the path-title line rendered as the first
 	// line inside that box (see view.go) — both are vertical space spent
 	// before any list row is drawn.
-	paneBoxOverhead    = 2
-	paneTitleRows      = 1
-	detailsPanelHeight = 4
-	statusBarHeight    = 2
+	paneBoxOverhead = 2
+	paneTitleRows   = 1
+
+	// detailsContentLines is the fixed number of interior lines the
+	// details panel always renders — the name row, up to two stat rows,
+	// a "compared by" row, and an error row (the worst case: a file with
+	// known stat info, a known compare level, and a read error). Bubble
+	// Tea/lipgloss's Height() is a floor, not a ceiling — content with
+	// more lines than requested just overflows past it — so renderDetails
+	// pads/truncates its output to exactly this many lines rather than
+	// letting the panel grow with its content, which would otherwise push
+	// the status bar down and shrink the pane boxes below it (or, since
+	// listAreaHeight's budget wouldn't know about the extra row, push the
+	// pane's own top border off the top of the terminal).
+	detailsContentLines = 5
+	detailsPanelHeight  = detailsContentLines + 1 // +1 for the top border
+	statusBarHeight     = 2
+
+	// spinnerInterval is how often the pending-work glyph animates
+	// through its "." / ".." / "..." frames (see spinnerGlyph in view.go).
+	spinnerInterval = 400 * time.Millisecond
+	spinnerFrames   = 3
 )
 
 // Model is the root Bubble Tea model.
 type Model struct {
 	sess *session.Session
 
-	cursorDir      *tree.Node
-	cursorIdx      int
-	scrollOffset   int
-	recursiveArmed bool
-	showHelp       bool
+	cursorDir    *tree.Node
+	cursorIdx    int
+	scrollOffset int
+	showHelp     bool
+
+	// compareLevel and recursive are persistent settings, not one-shot
+	// flags: they carry over between 'c' presses until the user changes
+	// them again with 'l' / 'r'. Defaults match the CLI's own default
+	// (size+date, recursive) so the in-app picker starts in the same
+	// state as the background auto-compare.
+	compareLevel diffmodel.CompareLevel
+	recursive    bool
+
+	spinnerFrame int
 
 	width, height int
 }
 
 // New builds the initial model bound to sess.
 func New(sess *session.Session) Model {
-	return Model{sess: sess, cursorDir: sess.Tree}
+	return Model{
+		sess:         sess,
+		cursorDir:    sess.Tree,
+		compareLevel: diffmodel.SizeMtime,
+		recursive:    true,
+	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitListResult(m.sess.ListResults()), waitCompareResult(m.sess.CompareResults()))
+	return tea.Batch(waitListResult(m.sess.ListResults()), waitCompareResult(m.sess.CompareResults()), tickSpinner())
 }
 
 type listResultMsg struct{ r scan.ListResult }
 type compareResultMsg struct{ r scan.CompareOutcome }
+type spinnerTickMsg struct{}
 
 func waitListResult(ch <-chan scan.ListResult) tea.Cmd {
 	return func() tea.Msg {
@@ -70,6 +105,10 @@ func waitCompareResult(ch <-chan scan.CompareOutcome) tea.Cmd {
 	}
 }
 
+func tickSpinner() tea.Cmd {
+	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -86,6 +125,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sess.OnCompareResult(msg.r)
 		return m, waitCompareResult(m.sess.CompareResults())
 
+	case spinnerTickMsg:
+		m.spinnerFrame = (m.spinnerFrame + 1) % spinnerFrames
+		return m, tickSpinner()
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -93,10 +136,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleKey dispatches a key event. A terminal read can legitimately
-// deliver several quickly-typed runes as a single tea.KeyMsg (e.g. the
-// 'r' then '2'/'3'/'4' recursive-arm sequence, SPEC.md §9, typed fast) —
-// each rune is processed in order as its own logical keypress so that
-// still works exactly as if they'd arrived in separate messages.
+// deliver several quickly-typed runes as a single tea.KeyMsg (e.g. an 'l'
+// then 'c' sequence typed fast, SPEC.md §9) — each rune is processed in
+// order as its own logical keypress so that still works exactly as if
+// they'd arrived in separate messages.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
 		var cmd tea.Cmd
@@ -155,14 +198,12 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.enter()
 	case "left", "backspace":
 		m.ascend()
-	case "2":
-		m.trigger(diffmodel.Size)
-	case "3":
-		m.trigger(diffmodel.SizeMtime)
-	case "4":
-		m.trigger(diffmodel.Checksum)
+	case "l":
+		m.cycleCompareLevel()
 	case "r":
-		m.recursiveArmed = !m.recursiveArmed
+		m.recursive = !m.recursive
+	case "c":
+		m.triggerCompare()
 	case "n":
 		m.jumpDiff(true)
 	case "N":
@@ -199,11 +240,24 @@ func (m *Model) clampCursor() {
 	m.ensureCursorVisible()
 }
 
-// trigger runs the given comparison level on the current directory's
-// children (SPEC.md §5.2), recursively if 'r' was pressed first.
-func (m *Model) trigger(level diffmodel.CompareLevel) {
-	m.sess.TriggerCompare(m.cursorDir, level, m.recursiveArmed)
-	m.recursiveArmed = false
+// cycleCompareLevel switches the persistent compareLevel setting to the
+// other of the two triggered levels ('l', SPEC.md §5.1/§9). Unlike the
+// old direct-trigger keys, this only changes what 'c' will run next time
+// — it does not itself enqueue any work.
+func (m *Model) cycleCompareLevel() {
+	if m.compareLevel == diffmodel.SizeMtime {
+		m.compareLevel = diffmodel.Checksum
+	} else {
+		m.compareLevel = diffmodel.SizeMtime
+	}
+}
+
+// triggerCompare runs the persistent compareLevel setting on the current
+// directory's children (SPEC.md §5.2), recursively if the persistent
+// recursive toggle is on. Both settings survive the trigger — 'c' can be
+// pressed repeatedly (e.g. while navigating) without re-arming anything.
+func (m *Model) triggerCompare() {
+	m.sess.TriggerCompare(m.cursorDir, m.compareLevel, m.recursive)
 }
 
 // enter navigates into the directory under the cursor. Only directories

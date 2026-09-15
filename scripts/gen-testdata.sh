@@ -6,9 +6,10 @@
 # Usage: scripts/gen-testdata.sh [output-dir]
 #
 # Covers, on purpose:
-#   - identical files, same-size-different-content, same-content-
-#     different-mtime, different-size (distinguishes the size /
-#     size+mtime / checksum comparison levels)
+#   - identical files (equal at every level, including metadata),
+#     same-metadata-different-content, same-content-different-mtime,
+#     different-size (distinguishes the metadata (size+mtime) and
+#     content (byte-for-byte) comparison levels)
 #   - files and directories that exist on only one side
 #   - a name that's a directory on one side and a plain file on the
 #     other, in both directions (independent name+type matching)
@@ -64,6 +65,14 @@ put() {
 		mkdir -p "$(dirname "$RIGHT/$rel")"
 		printf '%s' "$content" >"$RIGHT/$rel"
 	fi
+	# Writing left then right leaves their mtimes a few microseconds
+	# apart, which used to make "both sides, same content" fixtures
+	# spuriously show as "differs" at the metadata (size+mtime) compare
+	# level despite being byte-for-byte identical. Force them to match so
+	# these fixtures are actually equal at every level, not just content.
+	if [ "$side" = "B" ]; then
+		touch -r "$LEFT/$rel" "$RIGHT/$rel"
+	fi
 }
 
 # mkd SIDE reldir — create an empty directory.
@@ -92,6 +101,15 @@ put B same_file.txt "identical content on both sides"
 
 put L same_size_diff_content.txt "AAAAAAAAAA"
 put R same_size_diff_content.txt "BBBBBBBBBB"
+
+# Same size AND same mtime, but different content: the metadata level
+# reports "same" (it never reads content) while the content level
+# correctly reports "differs" — this is what actually exercises the gap
+# between the two compare levels, not just same_size_diff_content.txt's
+# size match.
+put L same_metadata_diff_content.txt "1111111111"
+put R same_metadata_diff_content.txt "2222222222"
+touch -r "$LEFT/same_metadata_diff_content.txt" "$RIGHT/same_metadata_diff_content.txt"
 
 put B same_content_diff_mtime.txt "identical bytes, different timestamps"
 touch -t 202001010000 "$LEFT/same_content_diff_mtime.txt"
@@ -181,6 +199,7 @@ chmod 000 "$RIGHT/unreadable_right"
 mkdir -p "$LEFT/large_files" "$RIGHT/large_files"
 dd if=/dev/urandom of="$LEFT/large_files/identical_large.bin" bs=1024 count=200 status=none
 cp "$LEFT/large_files/identical_large.bin" "$RIGHT/large_files/identical_large.bin"
+touch -r "$LEFT/large_files/identical_large.bin" "$RIGHT/large_files/identical_large.bin"
 
 dd if=/dev/urandom of="$LEFT/large_files/differs_near_end.bin" bs=1024 count=200 status=none
 cp "$LEFT/large_files/differs_near_end.bin" "$RIGHT/large_files/differs_near_end.bin"

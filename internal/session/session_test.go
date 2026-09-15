@@ -193,7 +193,7 @@ func TestAutoLevelFlagArmsWholeTree(t *testing.T) {
 	mustWrite(t, filepath.Join(left, "f.txt"), "aaa")
 	mustWrite(t, filepath.Join(right, "f.txt"), "bbb")
 
-	s := New(left, right, 2, diffmodel.Size)
+	s := New(left, right, 2, diffmodel.SizeMtime)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool {

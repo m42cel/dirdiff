@@ -1,0 +1,4 @@
+/dirdiff
+*.test
+*.out
+.DS_Store

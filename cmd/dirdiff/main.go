@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,7 +29,10 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	leftDir, rightDir := flag.Arg(0), flag.Arg(1)
+	// Clean strips any trailing slash (and collapses redundant ones), so
+	// a root like "foo/" doesn't show a trailing slash in the UI's path
+	// header and doesn't produce "foo//sub" once RelPath is appended.
+	leftDir, rightDir := filepath.Clean(flag.Arg(0)), filepath.Clean(flag.Arg(1))
 
 	autoLevel, err := parseCompareLevel(*compareLevelFlag)
 	if err != nil {

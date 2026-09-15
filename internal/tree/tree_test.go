@@ -112,6 +112,22 @@ func TestRollupCleanWhenAllSame(t *testing.T) {
 	}
 }
 
+func TestRollupSameWhenEmptyOnBothSides(t *testing.T) {
+	root := NewRoot()
+	ApplyListing(root, []diffmodel.ListedChild{
+		{Name: "empty", Type: diffmodel.Dir, Presence: diffmodel.Both},
+	}, nil, nil)
+	empty := root.Children[0]
+	ApplyListing(empty, nil, nil, nil)
+
+	if empty.Rollup != diffmodel.Same {
+		t.Fatalf("empty.Rollup = %v; want Same for a directory listed on both sides with no children", empty.Rollup)
+	}
+	if root.Rollup != diffmodel.Same {
+		t.Fatalf("root.Rollup = %v; want Same to propagate up through an empty-both-sides child", root.Rollup)
+	}
+}
+
 func TestRollupListErrIsError(t *testing.T) {
 	root := NewRoot()
 	ApplyListing(root, []diffmodel.ListedChild{{Name: "a", Type: diffmodel.Dir, Presence: diffmodel.Both}}, nil, nil)

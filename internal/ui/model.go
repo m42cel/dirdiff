@@ -15,7 +15,12 @@ import (
 )
 
 const (
-	headerHeight       = 1
+	// paneBoxOverhead is the top+bottom border lines of the full-box pane
+	// frame; paneTitleRows is the path-title line rendered as the first
+	// line inside that box (see view.go) — both are vertical space spent
+	// before any list row is drawn.
+	paneBoxOverhead    = 2
+	paneTitleRows      = 1
 	detailsPanelHeight = 4
 	statusBarHeight    = 2
 )
@@ -287,7 +292,7 @@ func (m *Model) ensureCursorVisible() {
 }
 
 func (m Model) listAreaHeight() int {
-	h := m.height - headerHeight - detailsPanelHeight - statusBarHeight
+	h := m.height - paneBoxOverhead - paneTitleRows - detailsPanelHeight - statusBarHeight
 	if h < 1 {
 		h = 1
 	}

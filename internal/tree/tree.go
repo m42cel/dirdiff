@@ -127,6 +127,13 @@ func computeRollup(n *Node) diffmodel.CompareResult {
 	if n.ListErrLeft != nil || n.ListErrRight != nil {
 		return diffmodel.CompareError
 	}
+	// A directory listed on both sides with no children at all has
+	// nothing that could differ — vacuously Same, not Unknown (which
+	// means "not evaluated yet" and would otherwise never resolve for
+	// an empty directory, since there's nothing to trigger a compare on).
+	if n.Listed && len(n.Children) == 0 {
+		return diffmodel.Same
+	}
 	worst := diffmodel.Unknown
 	for _, c := range n.Children {
 		worst = worstResult(worst, ownStatus(c))

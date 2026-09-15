@@ -221,8 +221,8 @@ limited-color terminals.
 |---|---|---|
 | Same | `=` | green |
 | Differs | `≠` | red |
-| Missing on right (left-only) | `→` | yellow |
-| Missing on left (right-only) | `←` | yellow |
+| Missing on right (left-only) | `←` (points to the side it's on) | yellow |
+| Missing on left (right-only) | `→` (points to the side it's on) | yellow |
 | Error / unreadable | `!` | magenta |
 | Pending / in-progress | spinner | gray/blue |
 | Unknown (not yet compared) | `·` (dim) | dim/gray |

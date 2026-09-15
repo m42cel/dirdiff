@@ -19,67 +19,103 @@ func (m Model) View() string {
 		return helpView()
 	}
 
-	paneWidth := m.width/2 - 2
-	if paneWidth < 8 {
-		paneWidth = 8
+	// Style.Width() already accounts for the style's own horizontal
+	// padding, so the only extra columns a rendered pane box adds beyond
+	// its Width are its two border columns — not border+padding, which
+	// would double-count the padding and leave a gap on the right. When
+	// avail is odd, the right pane takes the leftover column so the two
+	// boxes still fill the terminal edge to edge instead of falling
+	// short.
+	const paneOverhead = 2
+	avail := m.width - gutterWidth - 2*paneOverhead
+	leftWidth := avail / 2
+	if leftWidth < 8 {
+		leftWidth = 8
 	}
-
-	header := lipgloss.JoinHorizontal(lipgloss.Top,
-		headerStyle.Width(paneWidth).Render(truncate(displayPath(m.sess.LeftRoot, m.cursorDir.RelPath), paneWidth)),
-		headerStyle.Width(paneWidth).Render(truncate(displayPath(m.sess.RightRoot, m.cursorDir.RelPath), paneWidth)),
-	)
+	rightWidth := leftWidth
+	if remainder := avail - leftWidth*2; remainder > 0 {
+		rightWidth += remainder
+	}
 
 	listHeight := m.listAreaHeight()
-	leftLines, rightLines := m.renderPanes(listHeight)
+	interiorHeight := paneTitleRows + listHeight
+
+	leftTitle := titleStyle.Render(truncate(displayPath(m.sess.LeftRoot, m.cursorDir.RelPath), leftWidth))
+	rightTitle := titleStyle.Render(truncate(displayPath(m.sess.RightRoot, m.cursorDir.RelPath), rightWidth))
+
+	leftRows, gutterRows, rightRows := m.renderPanes(listHeight)
+	leftContent := strings.Join(append([]string{leftTitle}, leftRows...), "\n")
+	rightContent := strings.Join(append([]string{rightTitle}, rightRows...), "\n")
+	// The gutter has no border of its own, but the panes on either side
+	// do — their top border line consumes one row that the gutter must
+	// blank-pad for, on top of the blank line that lines up with the
+	// title row, or every glyph below renders one row too high.
+	gutterContent := strings.Join(append([]string{"", ""}, gutterRows...), "\n")
+
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		paneStyle.Width(paneWidth).Height(listHeight).Render(strings.Join(leftLines, "\n")),
-		paneStyle.Width(paneWidth).Height(listHeight).Render(strings.Join(rightLines, "\n")),
+		paneStyle.Width(leftWidth).Height(interiorHeight).Render(leftContent),
+		gutterStyle.Height(interiorHeight+1).Render(gutterContent),
+		paneStyle.Width(rightWidth).Height(interiorHeight).Render(rightContent),
 	)
 
-	details := detailsStyle.Width(m.width - 2).Height(detailsPanelHeight - 1).Render(m.renderDetails())
+	details := detailsStyle.Width(m.width).Height(detailsPanelHeight - 1).Render(m.renderDetails())
 	status := m.renderStatusBar()
 
-	return header + "\n" + body + "\n" + details + "\n" + status
+	return body + "\n" + details + "\n" + status
 }
 
-// renderPanes returns the visible lines for both panes. A directory
-// missing on one side renders as a single static placeholder on that
-// side, with no rows (SPEC.md §4.3) — everything under a one-sided
-// directory is, by construction, one-sided too, so this only ever
-// triggers at the directory-presence level, not per file.
-func (m Model) renderPanes(height int) (left, right []string) {
+// renderPanes returns the visible lines for both panes plus the status
+// glyph gutter between them. A directory missing on one side renders as
+// a single static placeholder on that side, with no rows and no gutter
+// glyph (SPEC.md §4.3) — everything under a one-sided directory is, by
+// construction, one-sided too, so this only ever triggers at the
+// directory-presence level, not per file.
+func (m Model) renderPanes(height int) (left, gutter, right []string) {
 	if !m.cursorDir.Listed {
 		msg := []string{dimStyle.Render("Loading…")}
-		return msg, msg
-	}
-	if len(m.cursorDir.Children) == 0 {
-		msg := []string{dimStyle.Render("(empty)")}
-		return msg, msg
+		return msg, []string{""}, msg
 	}
 
 	children := m.cursorDir.Children
-	end := m.scrollOffset + height
-	if end > len(children) {
-		end = len(children)
-	}
-	for i := m.scrollOffset; i < end; i++ {
-		l, r := renderRowPair(children[i], m.sess, i == m.cursorIdx)
-		left = append(left, l)
-		right = append(right, r)
+	if len(children) == 0 {
+		msg := []string{dimStyle.Render("(empty)")}
+		left, right = msg, msg
+	} else {
+		end := m.scrollOffset + height
+		if end > len(children) {
+			end = len(children)
+		}
+		for i := m.scrollOffset; i < end; i++ {
+			l, g, r := renderRowTriple(children[i], m.sess, i == m.cursorIdx)
+			left = append(left, l)
+			gutter = append(gutter, g)
+			right = append(right, r)
+		}
 	}
 
+	// A directory missing on one side always renders as a single static
+	// placeholder there, with no rows — even if it's empty on the side
+	// that does exist, in which case this replaces the "(empty)" set
+	// above. Checked last so it always wins.
 	switch m.cursorDir.Presence {
 	case diffmodel.LeftOnly:
-		right = []string{placeholderStyle.Render("— does not exist —")}
+		right = []string{placeholderStyle.Render(doesNotExistText)}
+		gutter = []string{""}
 	case diffmodel.RightOnly:
-		left = []string{placeholderStyle.Render("— does not exist —")}
+		left = []string{placeholderStyle.Render(doesNotExistText)}
+		gutter = []string{""}
 	}
-	return left, right
+	return left, gutter, right
 }
 
-func renderRowPair(n *tree.Node, sess *session.Session, selected bool) (left, right string) {
+// renderRowTriple renders one entry as (left name, gutter glyph, right
+// name). The status glyph appears once, centered in the gutter, and the
+// entry name on each side present is colored to match (SPEC.md §6: a
+// distinct glyph and a distinct color per status, glyph never dropped
+// in favor of color alone).
+func renderRowTriple(n *tree.Node, sess *session.Session, selected bool) (left, gutter, right string) {
 	glyph, style := statusGlyph(n, sess)
-	prefix := style.Render(glyph) + " "
+	gutterCell := style.Render(glyph)
 
 	nameTag := n.Name + typeGlyph(n.Type)
 	leftName, rightName := nameTag, nameTag
@@ -90,18 +126,33 @@ func renderRowPair(n *tree.Node, sess *session.Session, selected bool) (left, ri
 		leftName = ""
 	}
 
-	left = prefix + placeholderIfEmpty(leftName)
-	right = prefix + placeholderIfEmpty(rightName)
+	left = placeholderIfEmpty(styleIfNotEmpty(leftName, style))
+	right = placeholderIfEmpty(styleIfNotEmpty(rightName, style))
 	if selected {
 		left = cursorStyle.Render(left)
+		gutterCell = cursorStyle.Render(gutterCell)
 		right = cursorStyle.Render(right)
 	}
-	return left, right
+	return left, gutterCell, right
 }
+
+func styleIfNotEmpty(s string, style lipgloss.Style) string {
+	if s == "" {
+		return s
+	}
+	return style.Render(s)
+}
+
+// doesNotExistText spells out a whole pane being absent (the current
+// directory itself doesn't exist on this side); rowPlaceholder marks a
+// single row's missing counterpart more subtly, since the gutter's
+// →/← glyph right next to it already says which side is missing.
+const doesNotExistText = "<does not exist>"
+const rowPlaceholder = "–"
 
 func placeholderIfEmpty(s string) string {
 	if s == "" {
-		return placeholderStyle.Render("··")
+		return placeholderStyle.Render(rowPlaceholder)
 	}
 	return s
 }
@@ -119,13 +170,14 @@ func typeGlyph(t diffmodel.EntryType) string {
 
 // statusGlyph picks the glyph+style for a row. Every status pairs a
 // distinct glyph with a distinct color (SPEC.md §6) so it reads even
-// without color.
+// without color. The one-sided arrow points toward the side the entry
+// exists on, not the side it's missing from.
 func statusGlyph(n *tree.Node, sess *session.Session) (string, lipgloss.Style) {
 	switch n.Presence {
 	case diffmodel.LeftOnly:
-		return "→", missingStyle
-	case diffmodel.RightOnly:
 		return "←", missingStyle
+	case diffmodel.RightOnly:
+		return "→", missingStyle
 	}
 
 	if n.IsDir() {
@@ -137,11 +189,11 @@ func statusGlyph(n *tree.Node, sess *session.Session) (string, lipgloss.Style) {
 		}
 		switch n.Rollup {
 		case diffmodel.Same:
-			return "=", rollupSameStyle
+			return "=", sameStyle
 		case diffmodel.Differs, diffmodel.CompareError:
 			return "≠", differsStyle
 		default:
-			return "·", dimStyle
+			return "?", dimStyle
 		}
 	}
 
@@ -156,7 +208,7 @@ func statusGlyph(n *tree.Node, sess *session.Session) (string, lipgloss.Style) {
 	case diffmodel.CompareError:
 		return "!", errorStyle
 	default:
-		return "·", dimStyle
+		return "?", dimStyle
 	}
 }
 
@@ -206,7 +258,7 @@ func (m Model) renderStatusBar() string {
 
 func helpView() string {
 	lines := []string{
-		headerStyle.Render("dirdiff — keybindings"),
+		titleStyle.Render("dirdiff — keybindings"),
 		"",
 		"↑ / ↓          move cursor",
 		"PgUp/PgDn      move by page",
@@ -224,7 +276,7 @@ func helpView() string {
 		"",
 		"Status glyphs:",
 		sameStyle.Render("  =") + " same        " + differsStyle.Render("≠") + " differs        " + errorStyle.Render("!") + " error/unreadable",
-		missingStyle.Render("  →") + " missing right" + "  " + missingStyle.Render("←") + " missing left  " + dimStyle.Render("·") + " not yet compared",
+		missingStyle.Render("  ←") + " only on left" + "  " + missingStyle.Render("→") + " only on right  " + dimStyle.Render("?") + " not yet compared",
 		pendingStyle.Render("  …") + " pending / in progress",
 		"",
 		dimStyle.Render("press ? or esc to close"),

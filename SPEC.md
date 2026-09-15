@@ -1,0 +1,345 @@
+# dirdiff — Specification
+
+## 1. Overview
+
+`dirdiff` is a fast, read-only, interactive terminal UI (TUI) for comparing
+two directory trees side by side. It never modifies, deletes, or copies
+anything on either side. It is built in Go using the Bubble Tea framework.
+
+Core design goals:
+
+- **Instant startup feedback.** The first level of both directory trees is
+  shown as soon as it's read — no upfront deep scan blocks the UI.
+- **Background, prioritizable work.** Directory listing (breadth-first, full
+  tree, both roots) and content comparison run as background jobs on
+  priority queues. Navigating the UI reprioritizes pending work toward what
+  you're actually looking at, without blocking on it.
+- **Opt-in comparison depth.** Comparing file contents is expensive, so the
+  user explicitly chooses how thorough a comparison to run, and where.
+- **Read-only.** No delete, copy, move, or write operations of any kind
+  against either compared tree.
+
+## 2. Invocation
+
+```
+dirdiff [flags] <left-dir> <right-dir>
+```
+
+### 2.1 Flags
+
+| Flag | Description |
+|---|---|
+| `--compare-level=<level>` | Initial default comparison level to auto-apply as results come in. One of `size`, `size-mtime`, `checksum`. Default: no auto-compare beyond existence (user triggers levels manually). |
+| `--workers=<n>` | Overrides the concurrency of *both* worker pools (listing and checksum). Default: `GOMAXPROCS`. |
+
+No other flags in v1 (no filtering, no hidden-file toggle — dotfiles are
+always shown, no config persistence, no export).
+
+### 2.2 Startup validation
+
+Before entering the TUI, `dirdiff` validates both path arguments:
+
+- Both paths must exist and be directories.
+- If either check fails, print a clear error to stderr and exit with a
+  non-zero status. The TUI is never entered in this case.
+- Comparing a directory to itself (same path given twice) is allowed and
+  proceeds normally — everything will simply show as identical.
+
+## 3. Core data model
+
+### 3.1 Entry matching
+
+For a given directory, entries from the left and right listings are matched
+by **exact, byte-for-byte name comparison** (no case-insensitive or Unicode
+normalization matching). This is intentional: filesystems on the two sides
+may differ in case-sensitivity, and exact matching is the simplest,
+most predictable behavior.
+
+**Files and directories are matched independently by (name, type).** If the
+left side has a *file* named `foo` and the right side has a *directory*
+named `foo`, these are treated as two unrelated entries:
+
+- Row: directory `foo` — exists on right only, missing on left.
+- Row: file `foo` — exists on left only, missing on right.
+
+There is no special "type conflict" status; this falls naturally out of
+matching by (name, type) instead of by name alone.
+
+Symlinks are their own type, distinct from files and directories (see §7).
+
+### 3.2 Row status
+
+Each row (a matched or unmatched (name, type) pair) has a status, which is
+the union of two independent axes:
+
+**Presence:**
+- `both` — entry exists on both sides
+- `left-only` — missing on the right
+- `right-only` — missing on the left
+
+**Comparison result** (only meaningful when presence is `both`; only
+applies to files — directories use rollup, see §3.3):
+- `unknown` — not yet compared at any level
+- `same` — identical at the deepest level compared so far
+- `differs` — different at the deepest level compared so far
+- `error` — could not be compared (e.g. permission denied reading one side)
+
+A file's comparison result always reflects the **deepest level compared so
+far** (see §5.3, "level monotonicity") — re-running a shallower level never
+downgrades or overwrites a deeper known result.
+
+### 3.3 Directory status rollup
+
+Once any descendant of a directory has a known comparison result (or
+presence status other than `both`), the directory row displays a rolled-up
+indicator summarizing the worst-known status found anywhere beneath it:
+
+- If any descendant is `left-only`/`right-only`/`differs`/`error` (at any
+  depth, however that result was obtained — ad-hoc single-file compare,
+  a per-level directory compare, or a recursive job), the directory shows a
+  "contains differences" marker.
+- If all descendants examined so far are `same` (or `both`-existing
+  directories whose own descendants are all clean), the directory shows a
+  "clean so far" marker.
+- If nothing under the directory has been compared yet, it shows "not yet
+  known" (distinct from "clean" — this is *absence of information*, not a
+  positive result).
+
+Rollup updates live and incrementally as background results stream in; it
+only ever reflects work that has actually completed, never implies
+completeness of the subtree.
+
+## 4. UI layout
+
+### 4.1 Panes
+
+Two fixed 50/50-width panes (left tree, right tree), each showing the
+current directory's entries as a virtualized, scrollable list (only visible
+rows are rendered/built, so directories with thousands of entries stay
+smooth to scroll).
+
+Left and right panes **always navigate in lockstep**: they always show the
+corresponding directory in each tree, and the cursor row is always the same
+index in both panes conceptually (see §4.3 for the one-sided case).
+
+Each row shows: entry name, type glyph (file/dir/symlink), and a status
+glyph+color (see §6). No inline size/mtime/checksum columns — that detail
+appears in the details panel instead, to keep rows compact and both panes
+aligned.
+
+### 4.2 Details panel
+
+A panel (e.g. bottom of screen) shows full metadata for the row under the
+cursor, once known: size, mtime, and comparison level/result for both
+sides. Populates progressively as background jobs resolve that data (shows
+"—" / a pending marker for fields not yet fetched).
+
+### 4.3 One-sided navigation
+
+If the directory under the cursor doesn't exist on one side (or is a
+`left-only`/`right-only` row), you can still press Enter/right-arrow to
+navigate down as long as it exists on *at least one* side:
+
+- The existing side shows its real listing, fully interactive.
+- The missing side shows a static, inert placeholder ("does not exist")
+  with no rows. Cursor movement, selection, and comparison actions apply
+  only to the existing side. Pressing "up a level" (parent) still works
+  normally from this state — it re-syncs both panes to the shared parent.
+
+### 4.4 Status bar
+
+A persistent bottom status bar shows:
+- Current path (relative to each root) for both panes.
+- Background queue depth / activity summary, e.g.
+  `Listing: 1,204 pending · Comparing: 3 active, 42 pending`.
+- Context-relevant key hints for labeled/letter keybindings.
+
+### 4.5 Help overlay
+
+Pressing `?` toggles a full-screen overlay listing every keybinding and
+what it does. The status bar's hint area only shows a relevant subset at
+any time; `?` is the full reference.
+
+### 4.6 Resize behavior
+
+On terminal resize (`tea.WindowSizeMsg`), the layout (pane widths, viewport
+heights, details panel) reflows immediately. No enforced minimum size in
+v1.
+
+## 5. Comparison levels and triggering
+
+### 5.1 Levels
+
+| Level | What it checks | Cost |
+|---|---|---|
+| *(baseline, automatic)* Existence | Entry present on both sides, by name+type | Free — a byproduct of directory listing, not a triggered action |
+| Size | File size equal (one `stat()`/`lstat()` per file) | Cheap, one syscall per file |
+| Size + mtime | File size **and** modification time equal (same syscall as Size, but both fields must match) | Same syscall cost as Size, kept as a distinct level because it's a stricter/different verdict |
+| Checksum | Streaming byte-for-byte comparison, reading both files in parallel chunks and short-circuiting on first difference | Expensive — full (or partial, on early mismatch) file read of both sides |
+
+Existence is never a user-triggered action — it's simply the state every
+row is in immediately once its parent directory's listing has completed on
+both sides.
+
+### 5.2 Triggering
+
+- Comparison levels are triggered per-directory, for the **currently
+  displayed directory's visible entries only**, via labeled keys (e.g. `2`
+  = size, `3` = size+mtime, `4` = checksum).
+- A separate modifier/key (e.g. `Shift+2/3/4`, or a dedicated `R` prefix)
+  queues the same level **recursively** for the entire subtree rooted at
+  the current directory, feeding the background priority queue.
+- Triggering a level on a single selected file row (not a directory)
+  compares just that file.
+
+### 5.3 Level monotonicity
+
+Re-triggering a shallower level on a row that already has a deeper result
+never downgrades the displayed status (§3.2). It may still redundantly
+re-verify the shallow condition, but the UI continues showing the deepest
+known result.
+
+### 5.4 Job lifecycle and cancellation
+
+- Triggered comparisons (single-dir or recursive) are enqueued as jobs on
+  the checksum/compare worker pool, prioritized above ambient background
+  listing work.
+- Navigating away from a directory with in-flight or queued jobs does
+  **not** cancel them — they keep running at lower priority (deprioritized
+  below whatever you navigate into next) and their results fill in
+  whenever you scroll back, updating rollup status live.
+- There is a global cancel/clear-queue key (e.g. `Esc` or `X`) to drop all
+  pending (not yet started) queued comparison jobs.
+
+## 6. Status indicators
+
+Every status uses **both a distinct glyph and a distinct color** — never
+color alone — so the UI remains usable for colorblind users and in
+limited-color terminals.
+
+| Status | Example glyph | Color |
+|---|---|---|
+| Same | `=` | green |
+| Differs | `≠` | red |
+| Missing on right (left-only) | `→` | yellow |
+| Missing on left (right-only) | `←` | yellow |
+| Error / unreadable | `!` | magenta |
+| Pending / in-progress | spinner | gray/blue |
+| Unknown (not yet compared) | `·` (dim) | dim/gray |
+| Directory rollup: contains differences | e.g. bold `≠` | red |
+| Directory rollup: clean so far | e.g. dim `=` | green |
+| Directory rollup: not yet known | (no rollup glyph) | dim/gray |
+
+## 7. Symlinks
+
+Symlinks are **never followed** and are treated as their own distinct entry
+type (separate from files and directories):
+
+- Listing shows them with a distinct type glyph.
+- Comparison (any level) compares the **link target string itself**, not
+  the target's content — e.g. "size" for a symlink is undefined/not
+  applicable, "checksum" compares the readlink() target strings.
+- This avoids symlink-cycle handling entirely and avoids ever reading data
+  outside the two compared root trees.
+
+## 8. Background scanning architecture
+
+### 8.1 Initial listing
+
+On startup:
+1. Both root paths are `stat()`'d (already validated to exist/be dirs).
+2. The **first level** of both roots is listed synchronously enough to
+   render the initial UI immediately (or as the very first background job,
+   at highest priority) — the user should see top-level entries right
+   away.
+3. All discovered subdirectories are enqueued onto the **listing** worker
+   pool for breadth-first traversal, unbounded — the entire tree (both
+   sides) is eventually listed to completion in the background, however
+   large. Listing is cheap (directory reads only, no per-file stat calls
+   beyond what the OS returns from `readdir`), so this is safe to run
+   fully in the background without a depth/size cap.
+
+### 8.2 Worker pools
+
+Two separate pools:
+
+- **Listing pool** — handles directory reads (`readdir`) for the BFS
+  traversal. Small, fast jobs; sized to stay responsive even under load
+  from the checksum pool.
+- **Checksum/compare pool** — handles size `stat()` calls, mtime checks,
+  and byte-wise checksum comparisons. This is where expensive, I/O-heavy
+  work happens.
+
+Keeping these separate ensures a large recursive checksum job doesn't
+starve the ambient directory-listing scan (and vice versa), which matters
+because listing is what makes the UI feel instantly responsive when you
+navigate somewhere new.
+
+Both pools default to `GOMAXPROCS` workers; `--workers=<n>` overrides both.
+
+### 8.3 Priority queue and reprioritization
+
+Both pools are backed by a priority queue (not FIFO). Priority rules:
+
+- Listing jobs for the directory currently displayed in either pane sit at
+  the top of the listing queue.
+- **Navigating between directories** (moving the cursor's "current
+  directory" — i.e. Enter/back, not just moving the cursor up/down within
+  the same directory's entries) immediately reprioritizes: the newly
+  entered directory's listing job (if not already complete) jumps to the
+  front of the queue, along with jobs for its immediate children (to make
+  the *next* likely navigation step fast too).
+- Moving the cursor within the same directory's already-listed entries
+  does **not** trigger requeuing — only directory changes do.
+- Comparison jobs triggered by the user (§5.2) are enqueued above ambient
+  background listing/comparison work, but below whatever the user is
+  actively looking at.
+
+### 8.4 Error handling during scanning
+
+Permission errors or other read failures on a specific entry (file or
+directory) do not stop the scan or the affected job queue. The specific
+row is marked with the `error` status (§6) and the scan/comparison
+continues past it. No aggregate error log/panel in v1 — error details for
+a specific row are visible via the details panel (§4.2) when that row is
+selected.
+
+## 9. Navigation and keybindings
+
+Non-vim: arrow keys for movement, labeled letter/number keys for actions,
+always with the footer hint bar (§4.4) showing what's currently available,
+plus the full reference via `?` (§4.5).
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move cursor within current directory listing (both panes move together) |
+| `→` / `Enter` | Navigate into directory under cursor (both panes descend together; one-sided case per §4.3) |
+| `←` / `Backspace` | Navigate to parent directory (both panes ascend together) |
+| `2` | Compare current directory's visible entries: size |
+| `3` | Compare current directory's visible entries: size + mtime |
+| `4` | Compare current directory's visible entries: checksum |
+| `Shift+2` / `Shift+3` / `Shift+4` | Same as above, but recursive for the whole subtree |
+| `n` / `N` | Jump to next / previous entry in the current directory whose status isn't "same" (only considers entries already compared at some level) |
+| `X` / `Esc` | Cancel/clear all pending (not-yet-started) queued comparison jobs |
+| `?` | Toggle full keybinding help overlay |
+| `q` / `Ctrl+C` | Quit |
+
+## 10. Explicit non-goals (v1)
+
+- No file/directory content viewing or diffing (no "show me the actual
+  byte differences" pane) — status only, not a content diff tool.
+- No delete, copy, move, rename, or any other filesystem mutation.
+- No config file / persisted settings across runs — every run starts from
+  defaults.
+- No export of diff results to a file/report.
+- No glob/pattern filtering of visible entries.
+- No hidden-file toggle — dotfiles are always shown, unconditionally.
+- No resizable pane split — fixed 50/50.
+- No symlink-following.
+- No Windows support as a design constraint (may incidentally work via
+  Bubble Tea, but macOS + Linux are the only tested/targeted platforms).
+
+## 11. Platform target
+
+macOS and Linux only. POSIX filesystem semantics (permissions, symlinks)
+are assumed; no special-casing for Windows path separators or ACLs.

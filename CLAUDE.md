@@ -23,58 +23,89 @@ go vet ./...
 gofmt -l .                  # list files needing formatting
 gofmt -w .                  # apply formatting
 
-go test ./...                        # run all tests
-go test ./internal/diffmodel/...     # run one package's tests
-go test ./internal/diffmodel/ -run TestName   # run a single test
+go test ./...                              # run all tests
+go test ./internal/session/...             # run one package's tests
+go test ./internal/session/ -run TestName  # run a single test
+go test ./... -race                        # concurrency-sensitive; run with -race after
+                                            # touching workqueue or session
 
 go mod tidy                 # after adding/removing an import — go get alone
                              # leaves new deps marked `// indirect` until tidy
                              # reconciles direct vs transitive requirements
 ```
 
-## Current state vs. spec
-
-As of now, only a scaffold exists to prove out the toolchain: `cmd/dirdiff`
-does real flag parsing and startup validation, but `internal/ui` just lists
-the top level of both directories synchronously and renders a static view.
-None of the following from `SPEC.md` are implemented yet:
-
-- Background BFS listing scan, the two separate worker pools (listing vs.
-  checksum), and the priority queue with navigation-driven reprioritization
-  (§8)
-- The three opt-in comparison levels (size, size+mtime, checksum) and their
-  per-directory / recursive triggers (§5)
-- Directory status rollup from descendants (§3.3)
-- The details panel, help overlay, one-sided-navigation placeholder, and
-  "jump to next difference" (§4, §9)
-
-When implementing these, keep the architecture split the spec implies: a
-scanning/comparison layer that runs independently of the UI and reports
-results via messages, not a UI that blocks on I/O.
-
 ## Architecture
 
-- **`cmd/dirdiff`** — thin entrypoint. Parses `--compare-level` and
-  `--workers`, validates both root paths exist and are directories
-  (hard error to stderr, exit 1, *before* the TUI starts — see spec §2.2),
-  then launches the Bubble Tea program.
-- **`internal/diffmodel`** — shared vocabulary with no dependencies on UI
-  or I/O: `EntryType` (File/Dir/Symlink — matched independently per spec
-  §3.1, so a file and a directory with the same name never merge into one
-  row), `Presence` (Both/LeftOnly/RightOnly), `CompareLevel` and
-  `CompareResult`. Scanning, comparison, and UI code should all build on
-  these types rather than inventing parallel ones.
-- **`internal/ui`** — the Bubble Tea model (Init/Update/View). Will own
-  the two-pane rendering, cursor/navigation state, and (once built) the
-  glue to the background scan/compare layer via `tea.Cmd`/`tea.Msg`.
-  Status glyphs always pair a distinct glyph with a distinct color (spec
-  §6) — never rely on color alone when adding new statuses.
+Six packages, layered bottom-up; each only depends on the ones below it:
+
+- **`internal/diffmodel`** — shared vocabulary, no I/O, no dependencies:
+  `EntryType` (File/Dir/Symlink — matched independently per spec §3.1, so
+  a file and a directory with the same name never merge into one row),
+  `Presence`, `CompareLevel`/`CompareResult` (ordered shallowest-to-deepest
+  so callers compare levels with plain `<`), `ListedChild`, `StatInfo`.
+- **`internal/workqueue`** — generic, key-deduplicated priority queue
+  (`Queue[T]`) backing both worker pools. Three priority tiers (`High`/
+  `Medium`/`Low`) are reused for both listing and comparison (spec §8.3).
+  `Upsert` merges a job already queued under the same key instead of
+  duplicating it; `Boost` raises priority on an already-queued job (no-op
+  if it already started); `Pop`/`Done` track in-flight jobs so
+  `IsPending` reports queued-or-running for the UI's pending glyph.
+- **`internal/scan`** — pure filesystem I/O (`DoList`, `DoCompare`).
+  Every function takes absolute paths and returns a result; nothing here
+  touches shared state, so it's safe to call concurrently from workers.
+  Symlinks are never followed — any compare level just compares the two
+  `readlink` targets as strings (spec §7).
+- **`internal/tree`** — the mutable `Node` tree (one node per matched/
+  unmatched entry) and the rollup logic (spec §3.3). `ApplyListing` and
+  `ApplyCompareResult` are the only mutators; `ApplyCompareResult` is a
+  no-op on Level/Result if the incoming level isn't deeper than what's
+  already known (spec §5.3 monotonicity), though stat metadata is always
+  refreshed. **Nodes are mutated exclusively from the UI's Update loop**
+  (a single goroutine) — nothing in this package takes a lock.
+- **`internal/session`** — orchestrates the two worker pools and decides
+  what to enqueue and at what priority (`Navigate` for reprioritization,
+  `TriggerCompare`/`armRecursive` for opt-in comparison, spec §5.2/§5.4).
+  Framework-agnostic on purpose: it exposes plain channels
+  (`ListResults()`/`CompareResults()`), not `tea.Cmd`. A recursive
+  compare trigger arms *both* the target directory and its children
+  (`PendingRecursiveLevel`) so the intent survives even if the directory
+  itself hasn't finished listing yet — `OnListResult` re-checks this flag
+  every time new children appear, which is what makes a recursive compare
+  reach files discovered after the trigger.
+- **`internal/ui`** — the Bubble Tea model. `model.go` holds cursor/nav
+  state and key handling; `view.go` renders it; `style.go` has the
+  lipgloss styles. `handleKey` explicitly re-splits a `tea.KeyMsg` with
+  multiple `Runes` into separate keypresses before dispatching — Bubble
+  Tea can legitimately deliver quickly-typed keys (e.g. the `r` then
+  `2`/`3`/`4` recursive-arm sequence) batched into one event, and this
+  was an actual bug caught by an interactive pty smoke test, not a
+  theoretical one. Status glyphs always pair a distinct glyph with a
+  distinct color (spec §6) — never rely on color alone for a new status.
+- **`cmd/dirdiff`** — flag parsing (`--compare-level`, `--workers`),
+  startup path validation (hard error to stderr, exit 1, before the TUI
+  starts — spec §2.2), wires up `session.New` + `ui.New` + `tea.Program`.
 
 Entry matching (spec §3.1) is exact byte-for-byte name comparison — no
 case-insensitive or Unicode-normalized matching — and directories sort
-before files, then alphabetically (spec §4.1 / current `mergeListing` in
-`internal/ui/ui.go`). Keep new sorting/matching logic consistent with this
-rather than introducing a second convention.
+before files, then alphabetically (spec §4.1), consistently in both
+`scan.DoList` and `tree.ApplyListing`.
+
+## Testing notes
+
+- `internal/workqueue` and `internal/session` tests are concurrency-
+  sensitive (real goroutines, real channels) — always run them with
+  `-race` after changes, not just `go test`.
+- `internal/session`'s tests drive the session the same way the UI does:
+  a `pump` helper loops receiving from `ListResults()`/`CompareResults()`
+  and calling `OnListResult`/`OnCompareResult`, simulating the Update
+  loop being the sole tree mutator. Write new session tests the same way
+  rather than reaching into tree state directly.
+- There's no automated test for the Bubble Tea layer itself (raw terminal
+  I/O). It was manually smoke-tested by driving the real binary through a
+  pty (Python's `pty` module, responding to Bubble Tea's terminal
+  capability queries) — worth doing again for any change to key handling
+  or rendering, since that's exactly how the multi-rune key bug above was
+  found.
 
 ## Platform target
 

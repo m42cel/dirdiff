@@ -1,7 +1,11 @@
 // Package diffmodel holds the core data types shared between scanning,
 // comparison, and the UI: entry types, presence/comparison status, and the
-// comparison levels described in SPEC.md.
+// comparison levels described in SPEC.md. It has no dependency on
+// filesystem I/O or the UI framework, so scanning and tree-state code can
+// both build on it without coupling to each other.
 package diffmodel
+
+import "time"
 
 // EntryType distinguishes what kind of filesystem object a row represents.
 // Files, directories, and symlinks are matched independently (see
@@ -26,7 +30,8 @@ const (
 
 // CompareLevel is how thoroughly two sides of an entry have been checked.
 // Existence itself is not a level (SPEC.md §5.1) — it's implied once an
-// entry's Presence is known from listing.
+// entry's Presence is known from listing. Values are ordered shallowest
+// to deepest so callers can compare levels with plain <, <=, etc.
 type CompareLevel int
 
 const (
@@ -48,18 +53,18 @@ const (
 	CompareError
 )
 
-// Entry is one row in a directory listing pane: a name matched (or
-// unmatched) between the left and right trees.
-type Entry struct {
+// ListedChild describes one merged entry discovered while listing a
+// directory on both sides: a name matched (or unmatched) by (name, type)
+// per SPEC.md §3.1.
+type ListedChild struct {
 	Name     string
 	Type     EntryType
 	Presence Presence
+}
 
-	Level  CompareLevel
-	Result CompareResult
-
-	// Rollup summarizes descendant status for Dir entries (SPEC.md §3.3).
-	// It is the zero value (Unknown) until at least one descendant has
-	// been examined.
-	Rollup CompareResult
+// StatInfo holds size/mtime metadata for both sides of a compared entry,
+// populated once a Size or SizeMtime (or deeper) comparison has run.
+type StatInfo struct {
+	LeftSize, RightSize   int64
+	LeftMtime, RightMtime time.Time
 }

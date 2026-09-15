@@ -10,11 +10,13 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/m42cel/dirdiff/internal/diffmodel"
+	"github.com/m42cel/dirdiff/internal/session"
 	"github.com/m42cel/dirdiff/internal/ui"
 )
 
 func main() {
-	compareLevel := flag.String("compare-level", "", "initial comparison level to auto-apply: size|size-mtime|checksum")
+	compareLevelFlag := flag.String("compare-level", "", "initial comparison level to auto-apply in the background: size|size-mtime|checksum")
 	workers := flag.Int("workers", runtime.GOMAXPROCS(0), "worker pool size for listing and comparison")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] <left-dir> <right-dir>\n", os.Args[0])
@@ -28,7 +30,8 @@ func main() {
 	}
 	leftDir, rightDir := flag.Arg(0), flag.Arg(1)
 
-	if err := validateCompareLevel(*compareLevel); err != nil {
+	autoLevel, err := parseCompareLevel(*compareLevelFlag)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "dirdiff:", err)
 		os.Exit(1)
 	}
@@ -45,19 +48,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	m := ui.New(leftDir, rightDir)
+	sess := session.New(leftDir, rightDir, *workers, autoLevel)
+	defer sess.Close()
+
+	m := ui.New(sess)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "dirdiff:", err)
 		os.Exit(1)
 	}
 }
 
-func validateCompareLevel(level string) error {
+func parseCompareLevel(level string) (diffmodel.CompareLevel, error) {
 	switch level {
-	case "", "size", "size-mtime", "checksum":
-		return nil
+	case "":
+		return diffmodel.NotCompared, nil
+	case "size":
+		return diffmodel.Size, nil
+	case "size-mtime":
+		return diffmodel.SizeMtime, nil
+	case "checksum":
+		return diffmodel.Checksum, nil
 	default:
-		return fmt.Errorf("invalid --compare-level %q (want size|size-mtime|checksum)", level)
+		return 0, fmt.Errorf("invalid --compare-level %q (want size|size-mtime|checksum)", level)
 	}
 }
 

@@ -25,16 +25,11 @@ const (
 	paneTitleRows   = 1
 
 	// detailsContentLines is the fixed number of interior lines the
-	// details panel always renders — the name row, up to two stat rows,
-	// a "compared by" row, and an error row (the worst case: a file with
-	// known stat info, a known compare level, and a read error). Bubble
-	// Tea/lipgloss's Height() is a floor, not a ceiling — content with
-	// more lines than requested just overflows past it — so renderDetails
-	// pads/truncates its output to exactly this many lines rather than
-	// letting the panel grow with its content, which would otherwise push
-	// the status bar down and shrink the pane boxes below it (or, since
-	// listAreaHeight's budget wouldn't know about the extra row, push the
-	// pane's own top border off the top of the terminal).
+	// details panel always renders — the name row, up to two stat rows, a
+	// "compared by" row, and an error row. lipgloss's Height() is a
+	// floor, not a ceiling, so renderDetails pads/truncates its output to
+	// exactly this many lines to keep the panel's total height constant
+	// regardless of which fields the selected row populates.
 	detailsContentLines = 5
 	detailsPanelHeight  = detailsContentLines + 1 // +1 for the top border
 	statusBarHeight     = 2
@@ -54,11 +49,10 @@ type Model struct {
 	scrollOffset int
 	showHelp     bool
 
-	// compareLevel and recursive are persistent settings, not one-shot
-	// flags: they carry over between 'c' presses until the user changes
-	// them again with 'l' / 'r'. Defaults match the CLI's own default
-	// (size+date, recursive) so the in-app picker starts in the same
-	// state as the background auto-compare.
+	// compareLevel and recursive carry over between 'c' presses until
+	// changed again with 'l' / 'r'. Defaults match the CLI's own default
+	// (metadata, recursive) so the in-app picker starts in the same state
+	// as the background auto-compare.
 	compareLevel diffmodel.CompareLevel
 	recursive    bool
 
@@ -241,9 +235,9 @@ func (m *Model) clampCursor() {
 }
 
 // cycleCompareLevel switches the persistent compareLevel setting to the
-// other of the two triggered levels ('l', SPEC.md §5.1/§9). Unlike the
-// old direct-trigger keys, this only changes what 'c' will run next time
-// — it does not itself enqueue any work.
+// other of the two triggered levels ('l', SPEC.md §5.1/§9). It only
+// changes what 'c' will run next time — it does not itself enqueue any
+// work.
 func (m *Model) cycleCompareLevel() {
 	if m.compareLevel == diffmodel.SizeMtime {
 		m.compareLevel = diffmodel.Checksum
@@ -254,8 +248,9 @@ func (m *Model) cycleCompareLevel() {
 
 // triggerCompare runs the persistent compareLevel setting on the current
 // directory's children (SPEC.md §5.2), recursively if the persistent
-// recursive toggle is on. Both settings survive the trigger — 'c' can be
-// pressed repeatedly (e.g. while navigating) without re-arming anything.
+// recursive toggle is on. Neither setting is consumed by the trigger, so
+// 'c' can be pressed repeatedly (e.g. while navigating) without
+// re-selecting them each time.
 func (m *Model) triggerCompare() {
 	m.sess.TriggerCompare(m.cursorDir, m.compareLevel, m.recursive)
 }

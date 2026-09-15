@@ -66,10 +66,9 @@ put() {
 		printf '%s' "$content" >"$RIGHT/$rel"
 	fi
 	# Writing left then right leaves their mtimes a few microseconds
-	# apart, which used to make "both sides, same content" fixtures
-	# spuriously show as "differs" at the metadata (size+mtime) compare
-	# level despite being byte-for-byte identical. Force them to match so
-	# these fixtures are actually equal at every level, not just content.
+	# apart, so force them to match — otherwise a "both sides, same
+	# content" fixture would show as "differs" at the metadata (size+mtime)
+	# compare level despite being byte-for-byte identical.
 	if [ "$side" = "B" ]; then
 		touch -r "$LEFT/$rel" "$RIGHT/$rel"
 	fi

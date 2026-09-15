@@ -13,9 +13,9 @@ var (
 	// paneStyle draws a full box around each pane, in the terminal's
 	// default foreground color (no explicit color chosen — the two sides
 	// aren't distinguished by color, only by position and the path title
-	// rendered as each box's first content line). No background color is
-	// used anywhere either — the terminal's own background is unknown to
-	// us and painting over it risks fighting the user's theme.
+	// above each box). No background color is used anywhere either — the
+	// terminal's own background is unknown to us and painting over it
+	// risks fighting the user's theme.
 	paneStyle = lipgloss.NewStyle().Padding(0, 1).
 			BorderStyle(lipgloss.NormalBorder())
 

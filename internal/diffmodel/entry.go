@@ -35,10 +35,7 @@ const (
 //
 // There are only two triggered levels: SizeMtime (size AND mtime checked
 // together as one verdict — a file only counts as "same" at this level if
-// both match) and Checksum. Size and mtime were split into two levels in
-// an earlier design; they were merged because a same-size/different-mtime
-// (or vice versa) result was never actionable as its own distinct level in
-// practice.
+// both match) and Checksum.
 type CompareLevel int
 
 const (

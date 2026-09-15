@@ -179,11 +179,10 @@ func typeGlyph(t diffmodel.EntryType) string {
 	}
 }
 
-// spinnerFrames are the animated pending-work glyph's frames — a growing
-// "." / ".." / "..." sequence — cycled by the spinnerTickMsg driven from
-// model.go. Used for both directory listings and comparisons still in
-// flight or queued, replacing what used to be a single static "…" for
-// both (SPEC.md §6).
+// spinnerGlyphFrames are the animated pending-work glyph's frames — a
+// growing "." / ".." / "..." sequence — cycled by the spinnerTickMsg
+// driven from model.go. Used for both directory listings and comparisons
+// still in flight or queued (SPEC.md §6).
 var spinnerGlyphFrames = [spinnerFrames]string{".", "..", "..."}
 
 func spinnerGlyph(frame int) string {

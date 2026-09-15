@@ -76,14 +76,16 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   state and key handling; `view.go` renders it; `style.go` has the
   lipgloss styles. `handleKey` explicitly re-splits a `tea.KeyMsg` with
   multiple `Runes` into separate keypresses before dispatching — Bubble
-  Tea can legitimately deliver quickly-typed keys (e.g. the `r` then
-  `2`/`3`/`4` recursive-arm sequence) batched into one event, and this
-  was an actual bug caught by an interactive pty smoke test, not a
-  theoretical one. Status glyphs always pair a distinct glyph with a
-  distinct color (spec §6) — never rely on color alone for a new status.
-- **`cmd/dirdiff`** — flag parsing (`--compare-level`, `--workers`),
-  startup path validation (hard error to stderr, exit 1, before the TUI
-  starts — spec §2.2), wires up `session.New` + `ui.New` + `tea.Program`.
+  Tea can legitimately deliver quickly-typed keys (e.g. an `l` then `c`
+  sequence) batched into one event, and this was an actual bug caught by
+  an interactive pty smoke test, not a theoretical one. Status glyphs
+  always pair a distinct glyph with a distinct color (spec §6) — never
+  rely on color alone for a new status. The compare level (`l`) and
+  recursive toggle (`r`) are persistent settings, not one-shot flags —
+  `c` runs whatever is currently selected and doesn't reset either one.
+- **`cmd/dirdiff`** — flag parsing (`--level`, `--workers`), startup path
+  validation (hard error to stderr, exit 1, before the TUI starts — spec
+  §2.2), wires up `session.New` + `ui.New` + `tea.Program`.
 
 Entry matching (spec §3.1) is exact byte-for-byte name comparison — no
 case-insensitive or Unicode-normalized matching — and directories sort
@@ -106,6 +108,17 @@ before files, then alphabetically (spec §4.1), consistently in both
   capability queries) — worth doing again for any change to key handling
   or rendering, since that's exactly how the multi-rune key bug above was
   found.
+
+## Code comments
+
+Comments should explain non-obvious *current* behavior — a hidden
+invariant, a platform quirk, why a magic number is what it is — not the
+history of how the code got there. Don't write comments like "this used
+to be X", "previously did Y", "fixes a bug where Z", or "instead of the
+old approach"; that narration belongs in the commit message, not the
+source. A comment should still make sense to someone who never saw the
+prior version of the code; if it only makes sense as a diff against an
+earlier version, cut it.
 
 ## Platform target
 

@@ -316,21 +316,26 @@ Both pools default to `GOMAXPROCS` workers; `--workers=<n>` overrides both.
 
 ### 8.3 Priority queue and reprioritization
 
-Both pools are backed by a priority queue (not FIFO). Priority rules:
+Both pools are backed by a priority queue (not FIFO), ordered by tree-edge
+distance from a live "focus" path rather than by fixed tiers:
 
-- Listing jobs for the directory currently displayed in either pane sit at
-  the top of the listing queue.
+- Every queued job in the focus path's subtree — at any depth, not just
+  its direct children — pops ahead of every job outside it; within each
+  of those two groups, jobs closer to the focus path (fewer tree edges
+  away) pop first, and arrival order breaks remaining ties.
 - **Navigating between directories** (moving the cursor's "current
   directory" — i.e. Enter/back, not just moving the cursor up/down within
-  the same directory's entries) immediately reprioritizes: the newly
-  entered directory's listing job (if not already complete) jumps to the
-  front of the queue, along with jobs for its immediate children (to make
-  the *next* likely navigation step fast too).
+  the same directory's entries) immediately makes the newly entered
+  directory the focus path, reordering both queues: its own listing job
+  (if not already complete) and its whole known subtree jump ahead of
+  everything else, and jobs from wherever the focus used to be fall back
+  to plain distance/arrival order.
 - Moving the cursor within the same directory's already-listed entries
-  does **not** trigger requeuing — only directory changes do.
-- Comparison jobs triggered by the user (§5.2) are enqueued above ambient
-  background listing/comparison work, but below whatever the user is
-  actively looking at.
+  does **not** trigger reprioritization — only directory changes do.
+- Comparison jobs triggered by the user (§5.2) always target the
+  directory the user is currently in, so they're already inside the
+  current focus path and sort ahead of unrelated ambient background work
+  without needing a priority of their own.
 
 ### 8.4 Error handling during scanning
 

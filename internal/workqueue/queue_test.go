@@ -2,14 +2,13 @@ package workqueue
 
 import "testing"
 
-func TestPopOrdersByPriorityThenFIFO(t *testing.T) {
+func TestPopOrdersByArrivalWhenNoFocusDistinguishes(t *testing.T) {
 	q := New[string]()
-	q.Upsert("a", Low, "a", nil)
-	q.Upsert("b", High, "b", nil)
-	q.Upsert("c", Medium, "c", nil)
-	q.Upsert("d", High, "d", nil)
+	q.Upsert("a", "a", nil)
+	q.Upsert("b", "b", nil)
+	q.Upsert("c", "c", nil)
 
-	want := []string{"b", "d", "c", "a"}
+	want := []string{"a", "b", "c"}
 	for _, w := range want {
 		payload, key, ok := q.Pop()
 		if !ok || payload != w || key != w {
@@ -21,8 +20,8 @@ func TestPopOrdersByPriorityThenFIFO(t *testing.T) {
 
 func TestUpsertMergesExistingKey(t *testing.T) {
 	q := New[int]()
-	q.Upsert("x", Low, 1, nil)
-	q.Upsert("x", Low, 2, func(old int) int {
+	q.Upsert("x", 1, nil)
+	q.Upsert("x", 2, func(old int) int {
 		if 2 > old {
 			return 2
 		}
@@ -37,43 +36,74 @@ func TestUpsertMergesExistingKey(t *testing.T) {
 	}
 }
 
-func TestUpsertRaisesPriorityOnMerge(t *testing.T) {
+func TestFocusPrioritizesDescendantsOverEverythingElse(t *testing.T) {
 	q := New[string]()
-	q.Upsert("x", Low, "x", nil)
-	q.Upsert("y", High, "y", nil)
-	// Re-upsert x at High: it should now pop before y was already High... so pop order should be x or y (both High) but x must come before any Low-only item.
-	q.Upsert("x", High, "x", nil)
+	q.Upsert("elsewhere", "elsewhere", nil)
+	q.Upsert("dir/deep/nested", "dir/deep/nested", nil)
+	q.Upsert("dir", "dir", nil)
+	q.SetFocus("dir")
 
-	_, key1, _ := q.Pop()
-	_, key2, _ := q.Pop()
-	if key1 != "x" && key1 != "y" {
-		t.Fatalf("expected x or y first (both High priority), got %q", key1)
-	}
-	if key2 != "x" && key2 != "y" {
-		t.Fatalf("expected x or y second (both High priority), got %q", key2)
-	}
-	if key1 == key2 {
-		t.Fatalf("popped the same key twice: %q", key1)
+	want := []string{"dir", "dir/deep/nested", "elsewhere"}
+	for _, w := range want {
+		_, key, _ := q.Pop()
+		if key != w {
+			t.Fatalf("Pop() key = %q; want %q", key, w)
+		}
 	}
 }
 
-func TestBoostIsNoOpWhenNotQueued(t *testing.T) {
+func TestFocusOrdersDescendantsByDepth(t *testing.T) {
 	q := New[string]()
-	q.Boost("missing", High) // must not panic or create a phantom entry
-	if q.PendingCount() != 0 {
-		t.Fatalf("PendingCount() = %d; want 0", q.PendingCount())
+	q.Upsert("dir/a/b/c", "dir/a/b/c", nil)
+	q.Upsert("dir/a", "dir/a", nil)
+	q.Upsert("dir/a/b", "dir/a/b", nil)
+	q.SetFocus("dir")
+
+	want := []string{"dir/a", "dir/a/b", "dir/a/b/c"}
+	for _, w := range want {
+		_, key, _ := q.Pop()
+		if key != w {
+			t.Fatalf("Pop() key = %q; want %q (shallower descendants should pop first)", key, w)
+		}
 	}
 }
 
-func TestBoostRaisesQueuedPriority(t *testing.T) {
+func TestFocusOrdersNonDescendantsBySiblingDistance(t *testing.T) {
 	q := New[string]()
-	q.Upsert("a", Low, "a", nil)
-	q.Upsert("b", Medium, "b", nil)
-	q.Boost("a", High)
+	// "cousin" is under a different top-level directory than "dir" (two
+	// hops further away than "sibling", which shares dir's parent).
+	q.Upsert("cousin/child", "cousin/child", nil)
+	q.Upsert("sibling", "sibling", nil)
+	q.SetFocus("dir")
 
 	_, key, _ := q.Pop()
-	if key != "a" {
-		t.Fatalf("Pop() key = %q; want %q (boosted job should pop first)", key, "a")
+	if key != "sibling" {
+		t.Fatalf("Pop() key = %q; want %q (closer sibling should pop before a farther cousin)", key, "sibling")
+	}
+}
+
+func TestSetFocusReordersAlreadyQueuedJobs(t *testing.T) {
+	q := New[string]()
+	q.Upsert("a", "a", nil)
+	q.Upsert("b/child", "b/child", nil)
+	// With no focus, "a" (queued first) pops first.
+	q.SetFocus("b")
+
+	_, key, _ := q.Pop()
+	if key != "b/child" {
+		t.Fatalf("Pop() key = %q; want %q (SetFocus must reorder jobs queued before the focus change)", key, "b/child")
+	}
+}
+
+func TestSetFocusDoesNotAffectAlreadyActiveJobs(t *testing.T) {
+	q := New[string]()
+	q.Upsert("a", "a", nil)
+	q.Upsert("b", "b", nil)
+	_, activeKey, _ := q.Pop() // pops "a" (queued first), now in-flight
+
+	q.SetFocus("b")
+	if !q.IsPending(activeKey) {
+		t.Fatal("SetFocus must not affect an already-active (in-flight) job")
 	}
 }
 
@@ -82,7 +112,7 @@ func TestIsPendingReflectsQueuedAndActive(t *testing.T) {
 	if q.IsPending("a") {
 		t.Fatal("IsPending should be false before enqueue")
 	}
-	q.Upsert("a", High, "a", nil)
+	q.Upsert("a", "a", nil)
 	if !q.IsPending("a") {
 		t.Fatal("IsPending should be true while queued")
 	}
@@ -98,8 +128,8 @@ func TestIsPendingReflectsQueuedAndActive(t *testing.T) {
 
 func TestClearDropsOnlyQueuedNotActive(t *testing.T) {
 	q := New[string]()
-	q.Upsert("a", High, "a", nil)
-	q.Upsert("b", High, "b", nil)
+	q.Upsert("a", "a", nil)
+	q.Upsert("b", "b", nil)
 	_, activeKey, _ := q.Pop() // pops one of a/b, now in-flight
 
 	q.Clear()
@@ -121,7 +151,7 @@ func TestPopBlocksUntilUpsert(t *testing.T) {
 		}
 		close(done)
 	}()
-	q.Upsert("late", High, "late", nil)
+	q.Upsert("late", "late", nil)
 	<-done
 }
 

@@ -51,7 +51,6 @@ func New(leftRoot, rightRoot string, workers int, autoLevel diffmodel.CompareLev
 
 	if autoLevel != diffmodel.NotCompared {
 		root.PendingRecursiveLevel = autoLevel
-		root.PendingRecursivePriority = workqueue.Low
 	}
 
 	if workers < 1 {
@@ -60,7 +59,7 @@ func New(leftRoot, rightRoot string, workers int, autoLevel diffmodel.CompareLev
 	s.runListWorkers(workers)
 	s.runCompareWorkers(workers)
 
-	s.enqueueList(root, workqueue.High)
+	s.enqueueList(root)
 
 	return s
 }
@@ -109,9 +108,9 @@ func (s *Session) runCompareWorkers(n int) {
 	}
 }
 
-func (s *Session) enqueueList(n *tree.Node, prio workqueue.Priority) {
+func (s *Session) enqueueList(n *tree.Node) {
 	n.Listing = true
-	created := s.listQ.Upsert(n.RelPath, prio, scan.ListJob{
+	created := s.listQ.Upsert(n.RelPath, scan.ListJob{
 		RelPath:  n.RelPath,
 		LeftAbs:  scan.AbsPath(s.LeftRoot, n.RelPath),
 		RightAbs: scan.AbsPath(s.RightRoot, n.RelPath),
@@ -160,12 +159,12 @@ func (s *Session) OnListResult(r scan.ListResult) {
 	for _, c := range n.Children {
 		s.nodeIndex[c.RelPath] = c
 		if c.IsDir() {
-			s.enqueueList(c, workqueue.Low)
+			s.enqueueList(c)
 		}
 	}
 
 	if n.PendingRecursiveLevel != diffmodel.NotCompared {
-		s.armRecursive(n.Children, n.PendingRecursiveLevel, n.PendingRecursivePriority)
+		s.armRecursive(n.Children, n.PendingRecursiveLevel)
 	}
 }
 
@@ -179,44 +178,32 @@ func (s *Session) OnCompareResult(r scan.CompareOutcome) {
 	tree.AdjustPendingCompare(n, -1)
 }
 
-// Navigate reprioritizes the listing queue for a directory change: to's
-// own listing (if still pending) jumps to High, and its currently known
-// child directories are boosted to Medium so drilling one level further
-// is fast (SPEC.md §8.3). Moving the cursor within an already-listed
-// directory should not call this — only changing the current directory
-// does.
+// Navigate reprioritizes both worker queues for a directory change: to
+// becomes the new focus path (SPEC.md §8.3), so every still-queued job
+// anywhere in to's subtree — at any depth, not just its direct children —
+// now pops ahead of everything outside it, ordered by tree-edge distance
+// from to. Moving the cursor within an already-listed directory should
+// not call this — only changing the current directory does.
 func (s *Session) Navigate(to *tree.Node) {
 	if to == nil {
 		return
 	}
-	if !to.Listed {
-		if to.Listing {
-			s.listQ.Boost(to.RelPath, workqueue.High)
-		} else {
-			s.enqueueList(to, workqueue.High)
-		}
+	if !to.Listed && !to.Listing {
+		s.enqueueList(to)
 	}
-	for _, c := range to.Children {
-		if !c.IsDir() {
-			continue
-		}
-		if !c.Listed {
-			if c.Listing {
-				s.listQ.Boost(c.RelPath, workqueue.Medium)
-			} else {
-				s.enqueueList(c, workqueue.Medium)
-			}
-		}
-	}
+	s.listQ.SetFocus(to.RelPath)
+	s.cmpQ.SetFocus(to.RelPath)
 }
 
 // TriggerCompare starts a comparison at level for dir's children
 // (SPEC.md §5.2). If recursive is false, only dir's direct file/symlink
-// children are compared, at High priority. If recursive is true, the
-// entire subtree rooted at dir is armed at Medium priority: already-known
-// descendants are enqueued immediately, and any not yet discovered by
-// the background listing scan are picked up as they're found (via
-// OnListResult).
+// children are compared. If recursive is true, the entire subtree rooted
+// at dir is armed: already-known descendants are enqueued immediately,
+// and any not yet discovered by the background listing scan are picked
+// up as they're found (via OnListResult). Either way, dir is normally
+// also the current navigation focus, so these jobs already sort ahead of
+// unrelated background work (SPEC.md §8.3) without needing a priority of
+// their own.
 func (s *Session) TriggerCompare(dir *tree.Node, level diffmodel.CompareLevel, recursive bool) {
 	if dir == nil || !dir.IsDir() {
 		return
@@ -228,23 +215,21 @@ func (s *Session) TriggerCompare(dir *tree.Node, level diffmodel.CompareLevel, r
 		// reaching children discovered once listing completes.
 		if level > dir.PendingRecursiveLevel {
 			dir.PendingRecursiveLevel = level
-			dir.PendingRecursivePriority = workqueue.Medium
 		}
-		s.armRecursive(dir.Children, level, workqueue.Medium)
+		s.armRecursive(dir.Children, level)
 		return
 	}
 	for _, c := range dir.Children {
 		if !c.IsDir() {
-			s.maybeEnqueueCompare(c, level, workqueue.High)
+			s.maybeEnqueueCompare(c, level)
 		}
 	}
 }
 
 // armRecursive marks each directory in nodes (and, transitively, every
-// already-listed descendant directory) as pending level/prio, and
-// enqueues compare jobs for every currently known file/symlink
-// descendant.
-func (s *Session) armRecursive(nodes []*tree.Node, level diffmodel.CompareLevel, prio workqueue.Priority) {
+// already-listed descendant directory) as pending level, and enqueues
+// compare jobs for every currently known file/symlink descendant.
+func (s *Session) armRecursive(nodes []*tree.Node, level diffmodel.CompareLevel) {
 	for _, c := range nodes {
 		if c.Presence != diffmodel.Both {
 			continue // nothing to compare against on the missing side
@@ -252,18 +237,17 @@ func (s *Session) armRecursive(nodes []*tree.Node, level diffmodel.CompareLevel,
 		if c.IsDir() {
 			if level > c.PendingRecursiveLevel {
 				c.PendingRecursiveLevel = level
-				c.PendingRecursivePriority = prio
 			}
 			if c.Listed {
-				s.armRecursive(c.Children, level, prio)
+				s.armRecursive(c.Children, level)
 			}
 			continue
 		}
-		s.maybeEnqueueCompare(c, level, prio)
+		s.maybeEnqueueCompare(c, level)
 	}
 }
 
-func (s *Session) maybeEnqueueCompare(n *tree.Node, level diffmodel.CompareLevel, prio workqueue.Priority) {
+func (s *Session) maybeEnqueueCompare(n *tree.Node, level diffmodel.CompareLevel) {
 	if n.Presence != diffmodel.Both {
 		return
 	}
@@ -275,7 +259,7 @@ func (s *Session) maybeEnqueueCompare(n *tree.Node, level diffmodel.CompareLevel
 		LeftAbs: scan.AbsPath(s.LeftRoot, n.RelPath), RightAbs: scan.AbsPath(s.RightRoot, n.RelPath),
 		Type: n.Type, Level: level,
 	}
-	created := s.cmpQ.Upsert(n.RelPath, prio, job, func(old scan.CompareJob) scan.CompareJob {
+	created := s.cmpQ.Upsert(n.RelPath, job, func(old scan.CompareJob) scan.CompareJob {
 		if level > old.Level {
 			old.Level = level
 		}

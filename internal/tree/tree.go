@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
-	"github.com/m42cel/dirdiff/internal/workqueue"
 )
 
 // Node is one row: a name matched (or unmatched) between the left and
@@ -39,13 +38,12 @@ type Node struct {
 	Children                  []*Node
 	Rollup                    diffmodel.CompareResult
 
-	// PendingRecursiveLevel/Priority records a recursive compare trigger
-	// (SPEC.md §5.2/§5.4) that applies to this directory's subtree. It's
-	// consulted whenever new children are discovered (via listing) so a
-	// recursive compare started before the whole subtree is known still
-	// reaches every descendant as it's found.
-	PendingRecursiveLevel    diffmodel.CompareLevel
-	PendingRecursivePriority workqueue.Priority
+	// PendingRecursiveLevel records a recursive compare trigger (SPEC.md
+	// §5.2/§5.4) that applies to this directory's subtree. It's consulted
+	// whenever new children are discovered (via listing) so a recursive
+	// compare started before the whole subtree is known still reaches
+	// every descendant as it's found.
+	PendingRecursiveLevel diffmodel.CompareLevel
 
 	// PendingListingLeft/Right and PendingCompare count listing/
 	// comparison jobs queued or in flight anywhere in this node's

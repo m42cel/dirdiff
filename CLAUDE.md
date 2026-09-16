@@ -44,12 +44,15 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   `Presence`, `CompareLevel`/`CompareResult` (ordered shallowest-to-deepest
   so callers compare levels with plain `<`), `ListedChild`, `StatInfo`.
 - **`internal/workqueue`** — generic, key-deduplicated priority queue
-  (`Queue[T]`) backing both worker pools. Three priority tiers (`High`/
-  `Medium`/`Low`) are reused for both listing and comparison (spec §8.3).
-  `Upsert` merges a job already queued under the same key instead of
-  duplicating it; `Boost` raises priority on an already-queued job (no-op
-  if it already started); `Pop`/`Done` track in-flight jobs so
-  `IsPending` reports queued-or-running for the UI's pending glyph.
+  (`Queue[T]`) backing both worker pools. Pop order is driven by
+  tree-edge distance from a live focus path rather than fixed tiers
+  (spec §8.3): descendants of the focus path always pop before anything
+  else, and within each group, closer jobs pop first. `SetFocus` changes
+  the focus path and re-heapifies (`heap.Init`, O(n)) to reorder
+  already-queued jobs — cheap enough since it only runs on user
+  navigation, not per-job. `Upsert` merges a job already queued under the
+  same key instead of duplicating it; `Pop`/`Done` track in-flight jobs
+  so `IsPending` reports queued-or-running for the UI's pending glyph.
 - **`internal/scan`** — pure filesystem I/O (`DoList`, `DoCompare`).
   Every function takes absolute paths and returns a result; nothing here
   touches shared state, so it's safe to call concurrently from workers.
@@ -63,8 +66,9 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   refreshed. **Nodes are mutated exclusively from the UI's Update loop**
   (a single goroutine) — nothing in this package takes a lock.
 - **`internal/session`** — orchestrates the two worker pools and decides
-  what to enqueue and at what priority (`Navigate` for reprioritization,
-  `TriggerCompare`/`armRecursive` for opt-in comparison, spec §5.2/§5.4).
+  what to enqueue and when (`Navigate` calls `SetFocus` on both queues
+  for reprioritization, `TriggerCompare`/`armRecursive` for opt-in
+  comparison, spec §5.2/§5.4).
   Framework-agnostic on purpose: it exposes plain channels
   (`ListResults()`/`CompareResults()`), not `tea.Cmd`. A recursive
   compare trigger arms *both* the target directory and its children

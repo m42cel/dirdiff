@@ -20,7 +20,23 @@ type Session struct {
 	LeftRoot, RightRoot string
 	Tree                *tree.Node
 
+	// nodeIndex is keyed by RelPath alone, so it can't distinguish a file
+	// from a directory of the same name (SPEC.md §3.1 matches those as
+	// two unrelated rows sharing one RelPath) — fine for OnCompareResult,
+	// since a compare job only ever targets a both-sided entry and two
+	// entries can only share a RelPath by having different, one-sided
+	// presences (see dirIndex below). Not safe for directory listing
+	// lookups, which is what dirIndex is for.
 	nodeIndex map[string]*tree.Node
+
+	// dirIndex mirrors nodeIndex but holds only directory nodes, so
+	// OnListResult can resolve a listing result to the right node even
+	// when a same-named file collides with it in nodeIndex (last one
+	// indexed there wins, and children are indexed dirs-first — see
+	// sortChildren — so a colliding file always wins nodeIndex, which
+	// would otherwise misroute the directory's own listing result onto
+	// the file node and leave the directory's Listing flag stuck true).
+	dirIndex map[string]*tree.Node
 
 	listQ *workqueue.Queue[scan.ListJob]
 	cmpQ  *workqueue.Queue[scan.CompareJob]
@@ -41,6 +57,7 @@ func New(leftRoot, rightRoot string, workers int, autoLevel diffmodel.CompareLev
 		LeftRoot: leftRoot, RightRoot: rightRoot,
 		Tree:      root,
 		nodeIndex: map[string]*tree.Node{"": root},
+		dirIndex:  map[string]*tree.Node{"": root},
 		listQ:     workqueue.New[scan.ListJob](),
 		cmpQ:      workqueue.New[scan.CompareJob](),
 		// Buffered so workers never block handing off a result while the
@@ -135,7 +152,10 @@ func pendingListingDeltas(presence diffmodel.Presence, delta int) (left, right i
 	return left, right
 }
 
-// Node looks up a node by RelPath, if it's been discovered yet.
+// Node looks up a node by RelPath, if it's been discovered yet. If a
+// file and directory of the same name collide at relPath (SPEC.md §3.1),
+// this returns whichever was indexed last — use dirIndex-backed lookups
+// (as OnListResult does) when the directory specifically is required.
 func (s *Session) Node(relPath string) (*tree.Node, bool) {
 	n, ok := s.nodeIndex[relPath]
 	return n, ok
@@ -148,7 +168,7 @@ func (s *Session) Node(relPath string) (*tree.Node, bool) {
 // applies that comparison to the newly discovered children now (SPEC.md
 // §5.2/§5.4).
 func (s *Session) OnListResult(r scan.ListResult) {
-	n, ok := s.nodeIndex[r.RelPath]
+	n, ok := s.dirIndex[r.RelPath]
 	if !ok {
 		return
 	}
@@ -159,6 +179,7 @@ func (s *Session) OnListResult(r scan.ListResult) {
 	for _, c := range n.Children {
 		s.nodeIndex[c.RelPath] = c
 		if c.IsDir() {
+			s.dirIndex[c.RelPath] = c
 			s.enqueueList(c)
 		}
 	}

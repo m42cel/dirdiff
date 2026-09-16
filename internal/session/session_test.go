@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
+	"github.com/m42cel/dirdiff/internal/tree"
 )
 
 func mustMkdir(t *testing.T, path string) {
@@ -337,6 +338,61 @@ func TestCancelPendingComparesClearsSubtreePendingCompare(t *testing.T) {
 
 	if s.Tree.PendingCompare != 0 {
 		t.Fatalf("PendingCompare = %d after cancel and drain; want 0", s.Tree.PendingCompare)
+	}
+}
+
+// TestFileDirNameCollisionListingSettles covers SPEC.md §3.1: a file and
+// a directory sharing a name are matched independently by (name, type)
+// into two unrelated, same-RelPath rows. The directory row must still
+// get its own listing result routed to it (not the file row it collides
+// with in RelPath) so its Listing flag clears and its subtree gets
+// discovered.
+func TestFileDirNameCollisionListingSettles(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	mustMkdir(t, filepath.Join(left, "clash"))
+	mustWrite(t, filepath.Join(left, "clash", "nested.txt"), "x")
+	mustWrite(t, filepath.Join(right, "clash"), "a file, not a directory")
+
+	s := New(left, right, 2, diffmodel.NotCompared)
+	defer s.Close()
+
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
+
+	var dirNode, fileNode *tree.Node
+	for _, c := range s.Tree.Children {
+		if c.Name != "clash" {
+			continue
+		}
+		if c.IsDir() {
+			dirNode = c
+		} else {
+			fileNode = c
+		}
+	}
+	if dirNode == nil || fileNode == nil {
+		t.Fatalf("expected both a dir and a file named clash as children of root; got dir=%v file=%v", dirNode, fileNode)
+	}
+	if dirNode.Presence != diffmodel.LeftOnly {
+		t.Fatalf("dirNode.Presence = %v; want LeftOnly", dirNode.Presence)
+	}
+	if fileNode.Presence != diffmodel.RightOnly {
+		t.Fatalf("fileNode.Presence = %v; want RightOnly", fileNode.Presence)
+	}
+
+	pump(t, s, 5*time.Second, func() bool { return dirNode.Listed })
+	drainPending(t, s)
+
+	if dirNode.Listing {
+		t.Fatal("dirNode.Listing still true after its listing result should have been applied")
+	}
+	if len(dirNode.Children) != 1 || dirNode.Children[0].Name != "nested.txt" {
+		t.Fatalf("dirNode.Children = %v; want [nested.txt]", dirNode.Children)
+	}
+	if dirNode.PendingListingLeft != 0 {
+		t.Fatalf("dirNode.PendingListingLeft = %d after settling; want 0", dirNode.PendingListingLeft)
+	}
+	if s.Tree.PendingListingLeft != 0 {
+		t.Fatalf("root PendingListingLeft = %d after settling; want 0", s.Tree.PendingListingLeft)
 	}
 }
 

@@ -59,6 +59,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | `←` / `Backspace` | Go up to the parent directory |
 | `l` | Switch the compare level — metadata (size + mtime) ↔ content (byte-for-byte) — remembered until changed again |
 | `r` | Toggle recursive mode on/off — remembered, default on |
+| `f` | Open the row-status filter popup — All / Left-only / Right-only / Equal / Different — remembered like `l`/`r` |
 | `c` | Compare the current directory's files at the current level/recursive setting |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
 | `x` | Cancel all pending (not yet started) comparisons |
@@ -69,6 +70,12 @@ A directory that exists on only one side is still navigable — the
 missing side shows a static placeholder. Existence is shown as soon as a
 directory is listed; metadata/content comparisons only run once you
 trigger them with `c`.
+
+The row-status filter (`f`) hides everything in the current listing that
+doesn't match the chosen status, except that a directory containing a
+match anywhere below it stays visible — dimmed — so you can still
+navigate down to it. A directory with no match at all, direct or nested,
+is hidden entirely.
 
 ### Status glyphs
 

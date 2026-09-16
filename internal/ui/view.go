@@ -18,6 +18,9 @@ func (m Model) View() string {
 	if m.showHelp {
 		return helpView()
 	}
+	if m.showFilterMenu {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, filterMenuView(m.filterCursor))
+	}
 
 	// Style.Width() already accounts for the style's own horizontal
 	// padding, so the only extra columns a rendered pane box adds beyond
@@ -92,9 +95,13 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 		return msg, []string{""}, msg
 	}
 
-	children := m.cursorDir.Children
+	children := m.visibleChildren()
 	if len(children) == 0 {
-		msg := []string{dimStyle.Render("(empty)")}
+		text := "(empty)"
+		if len(m.cursorDir.Children) > 0 {
+			text = "(no entries match filter)"
+		}
+		msg := []string{dimStyle.Render(text)}
 		left, right = msg, msg
 	} else {
 		end := m.scrollOffset + height
@@ -102,7 +109,9 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 			end = len(children)
 		}
 		for i := m.scrollOffset; i < end; i++ {
-			l, g, r := renderRowTriple(children[i], m.sess, m.spinnerFrame, i == m.cursorIdx, leftWidth, rightWidth)
+			c := children[i]
+			dim := m.filter != FilterAll && !matchesFilter(c, m.filter)
+			l, g, r := renderRowTriple(c, m.sess, m.spinnerFrame, i == m.cursorIdx, dim, leftWidth, rightWidth)
 			left = append(left, l)
 			gutter = append(gutter, g)
 			right = append(right, r)
@@ -128,9 +137,14 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 // name). The status glyph appears once, centered in the gutter, and the
 // entry name on each side present is colored to match (SPEC.md §6: a
 // distinct glyph and a distinct color per status, glyph never dropped
-// in favor of color alone).
-func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, selected bool, leftWidth, rightWidth int) (left, gutter, right string) {
+// in favor of color alone). dim marks a row shown only because it has a
+// descendant matching the active filter, not because it matches itself
+// (SPEC.md §4.7) — faded to distinguish a path-through from a real hit.
+func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, selected, dim bool, leftWidth, rightWidth int) (left, gutter, right string) {
 	glyph, style := statusGlyph(n, sess, spinnerFrame)
+	if dim {
+		style = style.Faint(true)
+	}
 	gutterCell := style.Render(glyph)
 
 	nameTag := n.Name + typeGlyph(n.Type)
@@ -299,7 +313,7 @@ func statusGlyph(n *tree.Node, sess *session.Session, spinnerFrame int) (string,
 }
 
 func (m Model) renderDetails() string {
-	children := m.cursorDir.Children
+	children := m.visibleChildren()
 	if m.cursorIdx >= len(children) {
 		return padDetailsLines([]string{dimStyle.Render("(no selection)")})
 	}
@@ -385,8 +399,9 @@ func (m Model) renderStatusBar() string {
 	if m.recursive {
 		recursiveLabel = "on"
 	}
-	settings := fmt.Sprintf("[level: %s | recursive: %s] ", compareLevelLabel(m.compareLevel), recursiveLabel)
-	hint := "↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · c compare · n/N diff · x cancel · ? help · q quit"
+	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s] ",
+		compareLevelLabel(m.compareLevel), recursiveLabel, filterLabel(m.filter))
+	hint := "↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · c compare · n/N diff · x cancel · ? help · q quit"
 
 	return statusBarStyle.Render(stats) + "\n" + pendingStyle.Render(settings) + dimStyle.Render(hint)
 }
@@ -402,6 +417,7 @@ func helpView() string {
 		"← / Backspace  up to parent directory",
 		"l              switch compare level — metadata (size + date) ↔ content (byte-for-byte) (remembered)",
 		"r              toggle recursive on/off (remembered, default on)",
+		"f              open row-status filter popup: All / Left-only / Right-only / Equal / Different (remembered)",
 		"c              compare current directory's entries at the current level/recursive setting",
 		"n / N          jump to next / previous difference",
 		"x              cancel all pending (not yet started) comparisons",
@@ -417,6 +433,22 @@ func helpView() string {
 		dimStyle.Render("press ? or esc to close"),
 	}
 	return lipgloss.NewStyle().Padding(1, 2).Render(strings.Join(lines, "\n"))
+}
+
+// filterMenuView renders the 'f' popup (SPEC.md §4.7): a small box listing
+// every FilterStatus option, with cursor (the currently highlighted
+// option, not necessarily the active filter) marked by cursorStyle.
+func filterMenuView(cursor int) string {
+	lines := []string{titleStyle.Render("Filter rows"), ""}
+	for i, f := range allFilters {
+		line := "  " + filterLabel(f)
+		if i == cursor {
+			line = cursorStyle.Render("> " + filterLabel(f))
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "", dimStyle.Render("↑/↓ select · Enter apply · Esc cancel"))
+	return popupStyle.Render(strings.Join(lines, "\n"))
 }
 
 func displayPath(root, rel string) string {

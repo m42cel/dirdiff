@@ -32,8 +32,9 @@ dirdiff [flags] <left-dir> <right-dir>
 | `--level=<level>` | Initial comparison level to auto-apply recursively across the whole tree as results come in. One of `metadata`, `content`, `none`. Default: `metadata`. `none` opts back into existence-only (listing/matching, no auto-compare). |
 | `--workers=<n>` | Overrides the concurrency of *both* worker pools (listing and checksum). Default: `GOMAXPROCS`. |
 
-No other flags in v1 (no filtering, no hidden-file toggle — dotfiles are
-always shown, no config persistence, no export).
+No other flags in v1 (no hidden-file toggle — dotfiles are always shown, no
+config persistence, no export). Row-status filtering is available at
+runtime via the `f` key (§4.7); there's no flag to preset it at launch.
 
 ### 2.2 Startup validation
 
@@ -189,6 +190,46 @@ any time; `?` is the full reference.
 On terminal resize (`tea.WindowSizeMsg`), the layout (pane widths, viewport
 heights, details panel) reflows immediately. No enforced minimum size in
 v1.
+
+### 4.7 Row status filter
+
+Pressing `f` opens a popup for choosing a single row-status filter, applied
+to both panes at once: **All** (default, off), **Left-only**, **Right-only**,
+**Equal**, **Different**. `↑`/`↓` move the selection, `Enter` applies it and
+closes the popup, `Esc` closes without changing the current filter.
+
+The filter is a third persistent setting alongside compare level (`l`) and
+recursive (`r`, §5.2): it's remembered across directory navigation until
+changed again, and resets to All on the next launch (no persisted config,
+§10).
+
+When a filter other than All is active, a row is visible in the current
+directory's listing if either:
+
+- **It matches directly.** Left-only/Right-only match a row's own
+  `Presence` — this applies to directories too, independent of anything
+  below them. Equal/Different match a row's own comparison result: `Same`
+  for Equal, `Differs`/`error` for Different. A directory's own result is
+  its rolled-up status (§3.3), so a directory that's entirely clean (or
+  entirely, demonstrably differing) matches Equal/Different directly, the
+  same as a file would. A row whose result is still `unknown` never
+  matches Equal or Different.
+- **It has a matching descendant**, at any depth. Such a directory is
+  still shown — dimmed, to distinguish it from a direct match — purely so
+  you can navigate down to what matched inside it.
+
+A directory with neither a direct match nor a matching descendant is
+hidden completely, along with everything under it — there's nothing to
+navigate to there under the active filter, so unlike the empty-directory
+case (§4.1) it isn't shown as an empty, navigable listing. The one-sided
+navigation placeholder (§4.3) is unaffected by filtering.
+
+Because comparison and listing results stream in from background jobs
+(§8), the filtered view re-evaluates live: a row can appear or disappear
+while it's on screen as new results arrive, including a directory that was
+hidden suddenly gaining a matching descendant. If the cursor's row is
+filtered out from under it, the cursor moves to the nearest row still
+visible.
 
 ## 5. Comparison levels and triggering
 
@@ -367,6 +408,7 @@ plus the full reference via `?` (§4.5).
 | `←` / `Backspace` | Navigate to parent directory (both panes ascend together) |
 | `l` | Switch the persistent compare-level setting: metadata (size+date) ↔ content (byte-for-byte) (remembered until changed again) |
 | `r` | Toggle the persistent recursive setting on/off (remembered; default on) |
+| `f` | Open the row-status filter popup: All / Left-only / Right-only / Equal / Different (§4.7; remembered like `l`/`r`) |
 | `c` | Compare current directory's visible entries at the current level/recursive setting |
 | `n` / `N` | Jump to next / previous entry in the current directory whose status isn't "same" (only considers entries already compared at some level) |
 | `X` / `Esc` | Cancel/clear all pending (not-yet-started) queued comparison jobs |
@@ -381,7 +423,8 @@ plus the full reference via `?` (§4.5).
 - No config file / persisted settings across runs — every run starts from
   defaults.
 - No export of diff results to a file/report.
-- No glob/pattern filtering of visible entries.
+- No glob/pattern filtering of visible entries — only the fixed row-status
+  filter (§4.7).
 - No hidden-file toggle — dotfiles are always shown, unconditionally.
 - No resizable pane split — fixed 50/50.
 - No symlink-following.

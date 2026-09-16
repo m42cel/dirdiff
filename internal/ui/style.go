@@ -47,4 +47,9 @@ var (
 
 	statusBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 	detailsStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("7")).BorderStyle(lipgloss.NormalBorder()).BorderTop(true)
+
+	// popupStyle frames the filter menu (SPEC.md §4.7) as a centered box,
+	// distinct from helpView's full-screen overlay since the filter popup
+	// is a small, transient selector rather than a reference screen.
+	popupStyle = lipgloss.NewStyle().Padding(1, 2).BorderStyle(lipgloss.RoundedBorder())
 )

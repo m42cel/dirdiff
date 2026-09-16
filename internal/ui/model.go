@@ -59,6 +59,15 @@ type Model struct {
 	compareLevel diffmodel.CompareLevel
 	recursive    bool
 
+	// filter is the persistent row-status filter (SPEC.md §4.7), changed
+	// via the 'f' popup the same way 'l'/'r' change their own settings.
+	// showFilterMenu/filterCursor are the popup's own open/selection state,
+	// separate from filter itself so cancelling with Esc leaves filter
+	// untouched.
+	filter         FilterStatus
+	showFilterMenu bool
+	filterCursor   int
+
 	spinnerFrame int
 
 	width, height int
@@ -120,6 +129,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case compareResultMsg:
 		m.sess.OnCompareResult(msg.r)
+		m.clampCursor()
 		return m, waitCompareResult(m.sess.CompareResults())
 
 	case spinnerTickMsg:
@@ -164,6 +174,28 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.showFilterMenu {
+		switch key {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "up":
+			if m.filterCursor > 0 {
+				m.filterCursor--
+			}
+		case "down":
+			if m.filterCursor < len(allFilters)-1 {
+				m.filterCursor++
+			}
+		case "enter":
+			m.filter = allFilters[m.filterCursor]
+			m.showFilterMenu = false
+			m.clampCursor()
+		case "f", "esc":
+			m.showFilterMenu = false
+		}
+		return m, nil
+	}
+
 	switch key {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -175,7 +207,7 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 			m.ensureCursorVisible()
 		}
 	case "down":
-		if m.cursorIdx < len(m.cursorDir.Children)-1 {
+		if m.cursorIdx < len(m.visibleChildren())-1 {
 			m.cursorIdx++
 			m.ensureCursorVisible()
 		}
@@ -187,7 +219,7 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.cursorIdx = 0
 		m.ensureCursorVisible()
 	case "end":
-		if n := len(m.cursorDir.Children); n > 0 {
+		if n := len(m.visibleChildren()); n > 0 {
 			m.cursorIdx = n - 1
 		}
 		m.ensureCursorVisible()
@@ -199,6 +231,9 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.cycleCompareLevel()
 	case "r":
 		m.recursive = !m.recursive
+	case "f":
+		m.showFilterMenu = true
+		m.filterCursor = filterIndex(m.filter)
 	case "c":
 		m.triggerCompare()
 	case "n":
@@ -212,7 +247,7 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) moveCursor(delta int) {
-	n := len(m.cursorDir.Children)
+	n := len(m.visibleChildren())
 	if n == 0 {
 		return
 	}
@@ -226,8 +261,12 @@ func (m *Model) moveCursor(delta int) {
 	m.ensureCursorVisible()
 }
 
+// clampCursor keeps cursorIdx within the currently visible (filtered)
+// child list (SPEC.md §4.7) — called after anything that can shrink that
+// list out from under the cursor: a new list/compare result changing what
+// matches the active filter, or the filter itself changing.
 func (m *Model) clampCursor() {
-	n := len(m.cursorDir.Children)
+	n := len(m.visibleChildren())
 	if m.cursorIdx >= n {
 		m.cursorIdx = n - 1
 	}
@@ -263,10 +302,11 @@ func (m *Model) triggerCompare() {
 // §10). A directory missing on one side is still navigable as long as it
 // exists on the other (SPEC.md §4.3).
 func (m *Model) enter() {
-	if m.cursorIdx >= len(m.cursorDir.Children) {
+	visible := m.visibleChildren()
+	if m.cursorIdx >= len(visible) {
 		return
 	}
-	target := m.cursorDir.Children[m.cursorIdx]
+	target := visible[m.cursorIdx]
 	if target.Type != diffmodel.Dir {
 		return
 	}
@@ -277,7 +317,8 @@ func (m *Model) enter() {
 }
 
 // ascend moves to the parent directory, restoring the cursor to the
-// child row we came from.
+// child row we came from — found within the parent's own visible
+// (filtered) list, since that's what index the cursor addresses.
 func (m *Model) ascend() {
 	parent := m.cursorDir.Parent
 	if parent == nil {
@@ -286,7 +327,7 @@ func (m *Model) ascend() {
 	child := m.cursorDir
 	m.cursorDir = parent
 	m.cursorIdx = 0
-	for i, c := range parent.Children {
+	for i, c := range filterChildren(parent.Children, m.filter) {
 		if c == child {
 			m.cursorIdx = i
 			break
@@ -297,11 +338,12 @@ func (m *Model) ascend() {
 	m.sess.Navigate(parent)
 }
 
-// jumpDiff moves the cursor to the next (or previous) row in the current
-// directory whose status isn't "same" — SPEC.md §9's 'n'/'N'. It only
-// considers rows already compared at some level; it wraps around.
+// jumpDiff moves the cursor to the next (or previous) visible row in the
+// current directory whose status isn't "same" — SPEC.md §9's 'n'/'N'. It
+// only considers rows already compared at some level; it wraps around.
 func (m *Model) jumpDiff(forward bool) {
-	n := len(m.cursorDir.Children)
+	visible := m.visibleChildren()
+	n := len(visible)
 	if n == 0 {
 		return
 	}
@@ -312,7 +354,7 @@ func (m *Model) jumpDiff(forward bool) {
 	i := m.cursorIdx
 	for k := 0; k < n; k++ {
 		i = ((i+step)%n + n) % n
-		if isDiffering(m.cursorDir.Children[i]) {
+		if isDiffering(visible[i]) {
 			m.cursorIdx = i
 			m.ensureCursorVisible()
 			return

@@ -79,11 +79,11 @@ legible without relying on color:
 |---|---|
 | `=` | Same (at the deepest level compared so far) |
 | `≠` | Differs |
-| `→` | Missing on the right |
-| `←` | Missing on the left |
+| `←` | Only exists on the left |
+| `→` | Only exists on the right |
 | `!` | Error (e.g. permission denied) |
 | `.` / `..` / `...` | Pending — queued or currently being compared (animated) |
-| `·` | Not yet compared |
+| `?` | Not yet compared |
 
 Directories additionally roll up the worst status found anywhere in
 their subtree, so you can spot which subtrees contain differences

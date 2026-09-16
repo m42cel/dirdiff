@@ -123,3 +123,14 @@ earlier version, cut it.
 ## Platform target
 
 macOS and Linux only (spec §11) — no Windows path/ACL special-casing.
+
+## Keeping README.md in sync
+
+`README.md` is user-facing documentation, not derived from the code, so
+it drifts silently. Whenever a change touches anything it describes —
+flags, keybindings, status glyphs/colors, default settings — update the
+corresponding section of `README.md` in the same change. This has
+already gone stale once: the status-glyph table listed the one-sided
+arrows backwards (`→`/`←` swapped relative to what `statusGlyph` in
+`internal/ui/view.go` actually renders) and still showed a retired
+"not yet compared" glyph (`·` instead of the current `?`).

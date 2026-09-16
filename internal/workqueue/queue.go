@@ -89,8 +89,11 @@ func New[T any]() *Queue[T] {
 // comparison levels), and the job's priority is raised if the new
 // priority is higher. merge may be nil if payload combination isn't
 // needed (the newer payload is then simply discarded in favor of the
-// queued one).
-func (q *Queue[T]) Upsert(key string, priority Priority, payload T, merge func(old T) T) {
+// queued one). created reports whether this call inserted a brand-new
+// entry (false means it merged into an already-queued job), so callers
+// tracking derived per-job state (e.g. a subtree pending count) know
+// whether to count it.
+func (q *Queue[T]) Upsert(key string, priority Priority, payload T, merge func(old T) T) (created bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if it, ok := q.byKey[key]; ok {
@@ -101,13 +104,14 @@ func (q *Queue[T]) Upsert(key string, priority Priority, payload T, merge func(o
 			it.priority = priority
 			heap.Fix(&q.heap, it.index)
 		}
-		return
+		return false
 	}
 	q.seq++
 	it := &item[T]{key: key, priority: priority, seq: q.seq, payload: payload}
 	heap.Push(&q.heap, it)
 	q.byKey[key] = it
 	q.cond.Signal()
+	return true
 }
 
 // Boost raises the priority of key if it is still queued (not yet
@@ -170,13 +174,20 @@ func (q *Queue[T]) ActiveCount() int {
 }
 
 // Clear drops all not-yet-started jobs (the global cancel key, SPEC.md
-// §5.4). In-flight jobs already popped by a worker are unaffected — they
-// run to completion.
-func (q *Queue[T]) Clear() {
+// §5.4) and returns their keys, so a caller tracking derived per-job
+// state (e.g. a subtree pending count) can unwind it for jobs that will
+// now never produce a result. In-flight jobs already popped by a worker
+// are unaffected — they run to completion.
+func (q *Queue[T]) Clear() []string {
 	q.mu.Lock()
+	defer q.mu.Unlock()
+	keys := make([]string, 0, len(q.byKey))
+	for k := range q.byKey {
+		keys = append(keys, k)
+	}
 	q.heap = nil
 	q.byKey = map[string]*item[T]{}
-	q.mu.Unlock()
+	return keys
 }
 
 // Close unblocks all workers currently waiting in Pop, which then return

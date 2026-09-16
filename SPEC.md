@@ -109,6 +109,24 @@ Rollup updates live and incrementally as background results stream in; it
 only ever reflects work that has actually completed, never implies
 completeness of the subtree.
 
+While any comparison job is queued or in flight anywhere in a
+directory's subtree, that directory (and every ancestor above it, up to
+the root) shows a pending indicator in the gutter in place of its
+rollup glyph, so an in-progress subtree is never misread as "clean so
+far" or "not yet known" (§6).
+
+Listing-pending is shown separately from the rollup, not as a
+replacement for it: each side's tree is listed independently, so a
+directory whose subtree still has a listing job outstanding on a given
+side shows an animated indicator next to its name **in that side's pane
+specifically** — not in the shared gutter, and not necessarily on the
+other side, since a one-sided descendant's listing job only ever does
+real work on the side it exists on. Listing- and comparing-pending
+indicators can be visible at once: a directory whose own comparisons
+are still queued shows the gutter spinner while a still-listing
+descendant on one side additionally animates that side's name, at the
+same time.
+
 ## 4. UI layout
 
 ### 4.1 Panes
@@ -233,11 +251,21 @@ limited-color terminals.
 | Missing on right (left-only) | `←` (points to the side it's on) | yellow |
 | Missing on left (right-only) | `→` (points to the side it's on) | yellow |
 | Error / unreadable | `!` | magenta |
-| Pending / in-progress | animated `.` → `..` → `...` | gray/blue |
+| Pending / in-progress (single file, own comparison) | animated `.` → `..` → `...` | gray/blue |
 | Unknown (not yet compared) | `·` (dim) | dim/gray |
 | Directory rollup: contains differences | e.g. bold `≠` | red |
 | Directory rollup: clean so far | e.g. dim `=` | green |
 | Directory rollup: not yet known | (no rollup glyph) | dim/gray |
+| Directory rollup: comparing pending anywhere in subtree (gutter) | animated Braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) | blue |
+| Directory: listing pending on a given side's subtree (next to the name, that pane only) | animated `.` → `..` → `...` | blue |
+
+The listing-pending indicator is per-pane, not per-row: a directory
+missing on one side never shows it on that (nonexistent) side.
+
+The two subtree-pending rollup glyphs take priority over the
+completed-result rollup glyphs above them, and over each other: listing
+pending wins over comparing pending, since a descendant can't be queued
+for comparison before it's been discovered by listing.
 
 ## 7. Symlinks
 

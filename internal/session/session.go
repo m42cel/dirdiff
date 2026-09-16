@@ -111,11 +111,29 @@ func (s *Session) runCompareWorkers(n int) {
 
 func (s *Session) enqueueList(n *tree.Node, prio workqueue.Priority) {
 	n.Listing = true
-	s.listQ.Upsert(n.RelPath, prio, scan.ListJob{
+	created := s.listQ.Upsert(n.RelPath, prio, scan.ListJob{
 		RelPath:  n.RelPath,
 		LeftAbs:  scan.AbsPath(s.LeftRoot, n.RelPath),
 		RightAbs: scan.AbsPath(s.RightRoot, n.RelPath),
 	}, nil)
+	if created {
+		leftDelta, rightDelta := pendingListingDeltas(n.Presence, 1)
+		tree.AdjustPendingListing(n, leftDelta, rightDelta)
+	}
+}
+
+// pendingListingDeltas reports which side(s) a listing job for a node
+// with the given presence actually does work on — a one-sided node's
+// listing job only ever reads the side it exists on, so only that side
+// should register as pending.
+func pendingListingDeltas(presence diffmodel.Presence, delta int) (left, right int) {
+	if presence != diffmodel.RightOnly {
+		left = delta
+	}
+	if presence != diffmodel.LeftOnly {
+		right = delta
+	}
+	return left, right
 }
 
 // Node looks up a node by RelPath, if it's been discovered yet.
@@ -136,6 +154,8 @@ func (s *Session) OnListResult(r scan.ListResult) {
 		return
 	}
 	tree.ApplyListing(n, r.Children, r.LeftErr, r.RightErr)
+	leftDelta, rightDelta := pendingListingDeltas(n.Presence, -1)
+	tree.AdjustPendingListing(n, leftDelta, rightDelta)
 
 	for _, c := range n.Children {
 		s.nodeIndex[c.RelPath] = c
@@ -156,6 +176,7 @@ func (s *Session) OnCompareResult(r scan.CompareOutcome) {
 		return
 	}
 	tree.ApplyCompareResult(n, r.Level, r.Result, r.Err, r.Stat)
+	tree.AdjustPendingCompare(n, -1)
 }
 
 // Navigate reprioritizes the listing queue for a directory change: to's
@@ -254,19 +275,28 @@ func (s *Session) maybeEnqueueCompare(n *tree.Node, level diffmodel.CompareLevel
 		LeftAbs: scan.AbsPath(s.LeftRoot, n.RelPath), RightAbs: scan.AbsPath(s.RightRoot, n.RelPath),
 		Type: n.Type, Level: level,
 	}
-	s.cmpQ.Upsert(n.RelPath, prio, job, func(old scan.CompareJob) scan.CompareJob {
+	created := s.cmpQ.Upsert(n.RelPath, prio, job, func(old scan.CompareJob) scan.CompareJob {
 		if level > old.Level {
 			old.Level = level
 		}
 		return old
 	})
+	if created {
+		tree.AdjustPendingCompare(n, 1)
+	}
 }
 
 // CancelPendingCompares drops every not-yet-started queued comparison
 // job (the global cancel key, SPEC.md §5.4). In-flight jobs already
-// picked up by a worker finish normally.
+// picked up by a worker finish normally. Dropped jobs will now never
+// produce a result, so their subtree pending counts are unwound here
+// instead of via OnCompareResult.
 func (s *Session) CancelPendingCompares() {
-	s.cmpQ.Clear()
+	for _, key := range s.cmpQ.Clear() {
+		if n, ok := s.nodeIndex[key]; ok {
+			tree.AdjustPendingCompare(n, -1)
+		}
+	}
 }
 
 // QueueStats backs the status bar (SPEC.md §4.4).

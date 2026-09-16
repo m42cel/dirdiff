@@ -46,6 +46,22 @@ type Node struct {
 	// reaches every descendant as it's found.
 	PendingRecursiveLevel    diffmodel.CompareLevel
 	PendingRecursivePriority workqueue.Priority
+
+	// PendingListingLeft/Right and PendingCompare count listing/
+	// comparison jobs queued or in flight anywhere in this node's
+	// subtree, including itself. Listing is tracked per side because
+	// each side's tree is listed independently — a one-sided
+	// descendant's listing job only ever does real work on the side it
+	// exists on, so it should only ever show as pending on that side.
+	// Compare only ever runs against Both-sided entries, so one combined
+	// count is enough there. Package session keeps all three in sync via
+	// AdjustPendingListing/AdjustPendingCompare as jobs are enqueued and
+	// results applied, so an ancestor directory can tell whether work is
+	// still outstanding anywhere beneath it — unlike Rollup, which only
+	// ever reflects completed results (SPEC.md §3.3).
+	PendingListingLeft  int
+	PendingListingRight int
+	PendingCompare      int
 }
 
 // NewRoot creates the root node of the tree, representing "" (the
@@ -112,6 +128,23 @@ func ApplyCompareResult(n *Node, level diffmodel.CompareLevel, result diffmodel.
 		n.LeftMtime, n.RightMtime = stat.LeftMtime, stat.RightMtime
 	}
 	recomputeRollupUpward(n.Parent)
+}
+
+// AdjustPendingListing changes n's PendingListingLeft/Right counts by
+// leftDelta/rightDelta respectively and propagates the same change up
+// through Parent to the root.
+func AdjustPendingListing(n *Node, leftDelta, rightDelta int) {
+	for cur := n; cur != nil; cur = cur.Parent {
+		cur.PendingListingLeft += leftDelta
+		cur.PendingListingRight += rightDelta
+	}
+}
+
+// AdjustPendingCompare is AdjustPendingListing for comparison jobs.
+func AdjustPendingCompare(n *Node, delta int) {
+	for cur := n; cur != nil; cur = cur.Parent {
+		cur.PendingCompare += delta
+	}
 }
 
 // recomputeRollupUpward recomputes n's Rollup from its current Children

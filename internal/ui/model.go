@@ -34,10 +34,13 @@ const (
 	detailsPanelHeight  = detailsContentLines + 1 // +1 for the top border
 	statusBarHeight     = 2
 
-	// spinnerInterval is how often the pending-work glyph animates
-	// through its "." / ".." / "..." frames (see spinnerGlyph in view.go).
+	// spinnerInterval is how often pending-work glyphs advance to their
+	// next animation frame (see animGlyph in view.go). Every such glyph
+	// shares the one tick and counter below — each indexes it modulo its
+	// own frame count, so frame sequences of different lengths (a file's
+	// "." / ".." / "..." vs. a directory's Braille spinner) cycle
+	// independently off the same clock without needing their own timer.
 	spinnerInterval = 400 * time.Millisecond
-	spinnerFrames   = 3
 )
 
 // Model is the root Bubble Tea model.
@@ -120,7 +123,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitCompareResult(m.sess.CompareResults())
 
 	case spinnerTickMsg:
-		m.spinnerFrame = (m.spinnerFrame + 1) % spinnerFrames
+		m.spinnerFrame++
 		return m, tickSpinner()
 
 	case tea.KeyMsg:

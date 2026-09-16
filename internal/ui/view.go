@@ -144,6 +144,22 @@ func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, sele
 		gutterCell = cursorStyle.Render(gutterCell)
 		right = cursorStyle.Render(right)
 	}
+
+	// A directory's own listing-pending indicator is per side — each
+	// side's tree is listed independently, so a one-sided descendant's
+	// still-running listing job only ever counts against the side it
+	// exists on (SPEC.md §3.3) — and is appended after any cursor
+	// highlighting above, in its own unhighlighted pendingStyle, so a
+	// selected row's highlighted width stays constant instead of
+	// growing and shrinking as the animation frame's length changes.
+	if n.IsDir() {
+		if n.PendingListingLeft > 0 {
+			left += pendingStyle.Render(" " + animGlyph(spinnerGlyphFrames, spinnerFrame))
+		}
+		if n.PendingListingRight > 0 {
+			right += pendingStyle.Render(" " + animGlyph(spinnerGlyphFrames, spinnerFrame))
+		}
+	}
 	return left, gutterCell, right
 }
 
@@ -179,14 +195,22 @@ func typeGlyph(t diffmodel.EntryType) string {
 	}
 }
 
-// spinnerGlyphFrames are the animated pending-work glyph's frames — a
-// growing "." / ".." / "..." sequence — cycled by the spinnerTickMsg
-// driven from model.go. Used for both directory listings and comparisons
-// still in flight or queued (SPEC.md §6).
-var spinnerGlyphFrames = [spinnerFrames]string{".", "..", "..."}
+// spinnerGlyphFrames is a growing "." / ".." / "..." sequence (SPEC.md
+// §6), used for a file's own comparison still in flight or queued, and
+// for a directory's own per-side listing-pending indicator.
+var spinnerGlyphFrames = []string{".", "..", "..."}
 
-func spinnerGlyph(frame int) string {
-	return spinnerGlyphFrames[frame%len(spinnerGlyphFrames)]
+// comparePendingFrames animates a directory whose subtree still has a
+// comparison outstanding (SPEC.md §3.3/§6) — a distinct sequence so it
+// reads apart from spinnerGlyphFrames.
+var comparePendingFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// animGlyph indexes any of the frame sequences above by the shared
+// spinnerFrame tick, modulo that sequence's own length — sequences of
+// different lengths cycle independently off the one clock (see
+// spinnerInterval's doc comment in model.go).
+func animGlyph(frames []string, frame int) string {
+	return frames[frame%len(frames)]
 }
 
 // statusGlyph picks the glyph+style for a row. Every status pairs a
@@ -202,8 +226,17 @@ func statusGlyph(n *tree.Node, sess *session.Session, spinnerFrame int) (string,
 	}
 
 	if n.IsDir() {
-		if !n.Listed && sess.IsListPending(n.RelPath) {
-			return spinnerGlyph(spinnerFrame), pendingStyle
+		// A directory whose subtree still has a comparison outstanding
+		// shows that instead of its rollup glyph — the rollup only
+		// reflects completed results (SPEC.md §3.3) and would otherwise
+		// misreport a subtree as "clean so far" or "not yet known" while
+		// work is still in flight beneath it. Listing-pending is shown
+		// separately, per side, next to the name (renderRowTriple) —
+		// unlike comparison, which needs both sides, listing runs
+		// independently per side, so it doesn't belong in this shared
+		// gutter glyph.
+		if n.PendingCompare > 0 {
+			return animGlyph(comparePendingFrames, spinnerFrame), pendingStyle
 		}
 		if n.ListErrLeft != nil || n.ListErrRight != nil {
 			return "!", errorStyle
@@ -219,7 +252,7 @@ func statusGlyph(n *tree.Node, sess *session.Session, spinnerFrame int) (string,
 	}
 
 	if sess.IsComparePending(n.RelPath) {
-		return spinnerGlyph(spinnerFrame), pendingStyle
+		return animGlyph(spinnerGlyphFrames, spinnerFrame), pendingStyle
 	}
 	switch n.Result {
 	case diffmodel.Same:
@@ -338,7 +371,8 @@ func helpView() string {
 		"Status glyphs:",
 		sameStyle.Render("  =") + " same        " + differsStyle.Render("≠") + " differs        " + errorStyle.Render("!") + " error/unreadable",
 		missingStyle.Render("  ←") + " only on left" + "  " + missingStyle.Render("→") + " only on right  " + dimStyle.Render("?") + " not yet compared",
-		pendingStyle.Render("  ...") + " pending / in progress (animated)",
+		pendingStyle.Render("  ...") + " comparing: file, gutter (animated)  " + pendingStyle.Render("⠋") + " comparing: directory subtree, gutter (animated)",
+		pendingStyle.Render("  name...") + " directory: listing pending on that side, next to the name (animated)",
 		"",
 		dimStyle.Render("press ? or esc to close"),
 	}

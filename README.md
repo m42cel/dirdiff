@@ -46,7 +46,8 @@ dirdiff [flags] <left-dir> <right-dir>
 | Flag | Description |
 |---|---|
 | `--level=<level>` | Auto-apply a comparison level (`metadata`, `content`, or `none`) to the whole tree recursively in the background as it's discovered, instead of comparing manually. Default: `metadata`. |
-| `--workers=<n>` | Size of the listing and comparison worker pools (default: number of CPUs). |
+| `--scan-workers=<n>` | Size of the directory-listing worker pool (default: `1` — listing is cheap, low-CPU I/O that doesn't benefit from scaling with core count). |
+| `--compare-workers=<n>` | Size of the comparison worker pool (default: number of CPUs). |
 
 ### Keybindings
 
@@ -60,6 +61,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | `l` | Switch the compare level — metadata (size + mtime) ↔ content (byte-for-byte) — remembered until changed again |
 | `r` | Toggle recursive mode on/off — remembered, default on |
 | `f` | Open the row-status filter popup — All / Left-only / Right-only / Equal / Different — remembered like `l`/`r` |
+| `w` | Open the worker-count popup — resize the scan/compare pools live |
 | `c` | Compare the current directory's files at the current level/recursive setting |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
 | `x` | Cancel all pending (not yet started) comparisons |
@@ -76,6 +78,14 @@ doesn't match the chosen status, except that a directory containing a
 match anywhere below it stays visible — dimmed — so you can still
 navigate down to it. A directory with no match at all, direct or nested,
 is hidden entirely.
+
+The worker-count popup (`w`) lets you resize either pool while dirdiff is
+running, on top of the `--scan-workers`/`--compare-workers` starting
+values — useful for reacting to how a particular pair of devices actually
+performs instead of guessing correctly up front. Select a row, press
+`Enter`, type a number, and press `Enter` again to apply it; growing adds
+workers immediately, shrinking lets the excess finish whatever they're
+currently doing rather than interrupting it.
 
 ### Status glyphs
 

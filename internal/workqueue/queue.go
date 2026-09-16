@@ -179,6 +179,43 @@ func (q *Queue[T]) Pop() (payload T, key string, ok bool) {
 	return it.payload, it.key, true
 }
 
+// PopUnless is Pop, except it also stops waiting and returns ok=false if
+// stop reports true. stop is (re-)checked immediately before every wait,
+// so a Wake() call — which by itself only re-evaluates already-blocked
+// waiters, the same as a job arriving would — lets a caller tracking some
+// externally-owned condition (e.g. a resizable worker pool's shrunk
+// target) notice it promptly instead of only the next time Pop would
+// otherwise hand back a job. stop is invoked while the queue's own lock
+// is held, so it must not call back into this Queue.
+func (q *Queue[T]) PopUnless(stop func() bool) (payload T, key string, ok bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.heap.items) == 0 && !q.closed {
+		if stop() {
+			return payload, "", false
+		}
+		q.cond.Wait()
+	}
+	if len(q.heap.items) == 0 {
+		return payload, "", false
+	}
+	it := heap.Pop(&q.heap).(*item[T])
+	delete(q.byKey, it.key)
+	q.active[it.key] = struct{}{}
+	return it.payload, it.key, true
+}
+
+// Wake unblocks every call currently waiting in Pop/PopUnless so each
+// re-checks its own wait condition, the same as a new job arriving would
+// — it doesn't close the queue or add/drop any job. Used to let a
+// resizable worker pool's idle-but-blocked workers notice a shrunk
+// target immediately rather than only the next time a job arrives.
+func (q *Queue[T]) Wake() {
+	q.mu.Lock()
+	q.cond.Broadcast()
+	q.mu.Unlock()
+}
+
 // Done marks key as no longer in-flight.
 func (q *Queue[T]) Done(key string) {
 	q.mu.Lock()

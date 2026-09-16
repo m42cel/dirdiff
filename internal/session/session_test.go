@@ -53,7 +53,7 @@ func TestBFSEventuallyListsWholeTree(t *testing.T) {
 	mustWrite(t, filepath.Join(left, deep, "leaf.txt"), "x")
 	mustWrite(t, filepath.Join(right, deep, "leaf.txt"), "x")
 
-	s := New(left, right, 2, diffmodel.NotCompared)
+	s := New(left, right, 2, 2, diffmodel.NotCompared)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool {
@@ -69,7 +69,7 @@ func TestRecursiveTriggerReachesLaterDiscoveredDescendants(t *testing.T) {
 	mustWrite(t, filepath.Join(left, "sub", "f.txt"), "hello")
 	mustWrite(t, filepath.Join(right, "sub", "f.txt"), "world")
 
-	s := New(left, right, 1, diffmodel.NotCompared)
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
@@ -97,7 +97,7 @@ func TestRecursiveTriggerOnNotYetListedDirectoryStillArms(t *testing.T) {
 	mustWrite(t, filepath.Join(left, "sub", "f.txt"), "hello")
 	mustWrite(t, filepath.Join(right, "sub", "f.txt"), "world")
 
-	s := New(left, right, 1, diffmodel.NotCompared)
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
@@ -152,7 +152,7 @@ func TestNonRecursiveTriggerOnlyAffectsDirectChildren(t *testing.T) {
 	mustWrite(t, filepath.Join(left, "sub", "nested.txt"), "same")
 	mustWrite(t, filepath.Join(right, "sub", "nested.txt"), "same")
 
-	s := New(left, right, 2, diffmodel.NotCompared)
+	s := New(left, right, 2, 2, diffmodel.NotCompared)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool {
@@ -184,7 +184,7 @@ func TestCancelPendingComparesDropsQueuedNotActive(t *testing.T) {
 		mustWrite(t, filepath.Join(left, name), "x")
 		mustWrite(t, filepath.Join(right, name), "x")
 	}
-	s := New(left, right, 1, diffmodel.NotCompared)
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
@@ -205,7 +205,7 @@ func TestSubtreePendingListingSettlesToZero(t *testing.T) {
 	mustWrite(t, filepath.Join(left, deep, "leaf.txt"), "x")
 	mustWrite(t, filepath.Join(right, deep, "leaf.txt"), "x")
 
-	s := New(left, right, 2, diffmodel.NotCompared)
+	s := New(left, right, 2, 2, diffmodel.NotCompared)
 	defer s.Close()
 
 	if s.Tree.PendingListingLeft == 0 || s.Tree.PendingListingRight == 0 {
@@ -230,7 +230,7 @@ func TestPerSideListingPendingOnOneSidedDirectory(t *testing.T) {
 	mustWrite(t, filepath.Join(left, "top.txt"), "x")
 	mustWrite(t, filepath.Join(right, "top.txt"), "x")
 
-	s := New(left, right, 1, diffmodel.NotCompared)
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
@@ -276,7 +276,7 @@ func TestSubtreePendingCompareTracksAncestorsAndClears(t *testing.T) {
 	mustWrite(t, filepath.Join(left, "sub", "f.txt"), "hello")
 	mustWrite(t, filepath.Join(right, "sub", "f.txt"), "world")
 
-	s := New(left, right, 1, diffmodel.NotCompared)
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool {
@@ -320,7 +320,7 @@ func TestCancelPendingComparesClearsSubtreePendingCompare(t *testing.T) {
 		mustWrite(t, filepath.Join(left, name), "x")
 		mustWrite(t, filepath.Join(right, name), "x")
 	}
-	s := New(left, right, 1, diffmodel.NotCompared)
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
@@ -353,7 +353,7 @@ func TestFileDirNameCollisionListingSettles(t *testing.T) {
 	mustWrite(t, filepath.Join(left, "clash", "nested.txt"), "x")
 	mustWrite(t, filepath.Join(right, "clash"), "a file, not a directory")
 
-	s := New(left, right, 2, diffmodel.NotCompared)
+	s := New(left, right, 2, 2, diffmodel.NotCompared)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
@@ -396,12 +396,84 @@ func TestFileDirNameCollisionListingSettles(t *testing.T) {
 	}
 }
 
+func TestSetListWorkersGrowsAndShrinksWithoutLosingWork(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	for i := 0; i < 20; i++ {
+		name := fmt.Sprintf("d%d", i)
+		mustMkdir(t, filepath.Join(left, name))
+		mustMkdir(t, filepath.Join(right, name))
+		mustWrite(t, filepath.Join(left, name, "f.txt"), "x")
+		mustWrite(t, filepath.Join(right, name, "f.txt"), "x")
+	}
+
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
+	defer s.Close()
+
+	if got := s.ListWorkers(); got != 1 {
+		t.Fatalf("ListWorkers() = %d right after New(1, ...); want 1", got)
+	}
+
+	s.SetListWorkers(4)
+	if got := s.ListWorkers(); got != 4 {
+		t.Fatalf("ListWorkers() = %d after SetListWorkers(4); want 4", got)
+	}
+
+	// Shrink back down mid-flight — none of the 20 subdirectories'
+	// listings (already queued from New()'s root listing once pumped)
+	// should be lost, whether they're picked up by a worker that then
+	// exits, or one that survives the shrink.
+	s.SetListWorkers(1)
+	if got := s.ListWorkers(); got != 1 {
+		t.Fatalf("ListWorkers() = %d after SetListWorkers(1); want 1 (target changes immediately, independent of how many goroutines have actually exited yet)", got)
+	}
+
+	pump(t, s, 5*time.Second, func() bool {
+		for i := 0; i < 20; i++ {
+			if _, ok := s.Node(fmt.Sprintf("d%d/f.txt", i)); !ok {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func TestSetCompareWorkersGrowsAndShrinksWithoutLosingWork(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	for i := 0; i < 20; i++ {
+		name := fmt.Sprintf("f%d.txt", i)
+		mustWrite(t, filepath.Join(left, name), "x")
+		mustWrite(t, filepath.Join(right, name), "y")
+	}
+
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
+	defer s.Close()
+
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
+
+	s.SetCompareWorkers(4)
+	s.TriggerCompare(s.Tree, diffmodel.Checksum, false)
+	s.SetCompareWorkers(1)
+	if got := s.CompareWorkers(); got != 1 {
+		t.Fatalf("CompareWorkers() = %d after SetCompareWorkers(1); want 1", got)
+	}
+
+	pump(t, s, 5*time.Second, func() bool {
+		for i := 0; i < 20; i++ {
+			n, ok := s.Node(fmt.Sprintf("f%d.txt", i))
+			if !ok || n.Level != diffmodel.Checksum {
+				return false
+			}
+		}
+		return true
+	})
+}
+
 func TestAutoLevelFlagArmsWholeTree(t *testing.T) {
 	left, right := t.TempDir(), t.TempDir()
 	mustWrite(t, filepath.Join(left, "f.txt"), "aaa")
 	mustWrite(t, filepath.Join(right, "f.txt"), "bbb")
 
-	s := New(left, right, 2, diffmodel.SizeMtime)
+	s := New(left, right, 2, 2, diffmodel.SizeMtime)
 	defer s.Close()
 
 	pump(t, s, 5*time.Second, func() bool {

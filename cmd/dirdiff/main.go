@@ -18,7 +18,8 @@ import (
 
 func main() {
 	levelFlag := flag.String("level", "metadata", "initial comparison level to auto-apply recursively in the background: metadata|content|none (none = existence/listing only)")
-	workers := flag.Int("workers", runtime.GOMAXPROCS(0), "worker pool size for listing and comparison")
+	scanWorkers := flag.Int("scan-workers", 1, "worker pool size for directory listing")
+	compareWorkers := flag.Int("compare-workers", runtime.GOMAXPROCS(0), "worker pool size for comparison")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] <left-dir> <right-dir>\n", os.Args[0])
 		flag.PrintDefaults()
@@ -39,8 +40,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "dirdiff:", err)
 		os.Exit(1)
 	}
-	if *workers < 1 {
-		fmt.Fprintln(os.Stderr, "dirdiff: --workers must be >= 1")
+	if *scanWorkers < 1 {
+		fmt.Fprintln(os.Stderr, "dirdiff: --scan-workers must be >= 1")
+		os.Exit(1)
+	}
+	if *compareWorkers < 1 {
+		fmt.Fprintln(os.Stderr, "dirdiff: --compare-workers must be >= 1")
 		os.Exit(1)
 	}
 	if err := validateDir(leftDir); err != nil {
@@ -52,7 +57,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	sess := session.New(leftDir, rightDir, *workers, autoLevel)
+	sess := session.New(leftDir, rightDir, *scanWorkers, *compareWorkers, autoLevel)
 	defer sess.Close()
 
 	m := ui.New(sess)

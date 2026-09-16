@@ -30,7 +30,8 @@ dirdiff [flags] <left-dir> <right-dir>
 | Flag | Description |
 |---|---|
 | `--level=<level>` | Initial comparison level to auto-apply recursively across the whole tree as results come in. One of `metadata`, `content`, `none`. Default: `metadata`. `none` opts back into existence-only (listing/matching, no auto-compare). |
-| `--workers=<n>` | Overrides the concurrency of *both* worker pools (listing and checksum). Default: `GOMAXPROCS`. |
+| `--scan-workers=<n>` | Concurrency of the listing worker pool. Default: `1` (§8.2). |
+| `--compare-workers=<n>` | Concurrency of the checksum/compare worker pool. Default: `GOMAXPROCS` (§8.2). |
 
 No other flags in v1 (no hidden-file toggle — dotfiles are always shown, no
 config persistence, no export). Row-status filtering is available at
@@ -231,6 +232,29 @@ hidden suddenly gaining a matching descendant. If the cursor's row is
 filtered out from under it, the cursor moves to the nearest row still
 visible.
 
+### 4.8 Worker-count popup
+
+Pressing `w` opens a popup listing both worker pools (§8.2) — "Scan
+workers" and "Compare workers" — each showing its currently configured
+size. `↑`/`↓` move the selection between the two rows; `Enter` opens a
+second, separate popup named after the selected row, with its own numeric
+input (`0`-`9` only, `Backspace` to correct). `Enter` in that input popup
+applies the typed value and closes both popups, returning straight to the
+main screen — adjusting the other pool means pressing `w` again. `Esc` in
+the input popup cancels without changing anything and returns only to the
+row list (not all the way out), so a mis-typed entry can be retried
+without reopening the whole thing; `Esc` on the row list closes it the
+same way. Applying an empty value (`Enter` pressed without typing any
+digit) is a no-op, not a reset to some default.
+
+This resizes the live pool immediately — it's not a setting that's merely
+remembered for a future action the way compare level/recursive/filter are.
+Growing spawns the additional workers right away; shrinking never
+interrupts a job already in flight (the same "let it finish" policy as the
+global cancel key, §5.4) — the excess workers simply stop picking up new
+jobs once their current one completes, or immediately if they're already
+idle.
+
 ## 5. Comparison levels and triggering
 
 ### 5.1 Levels
@@ -361,7 +385,17 @@ starve the ambient directory-listing scan (and vice versa), which matters
 because listing is what makes the UI feel instantly responsive when you
 navigate somewhere new.
 
-Both pools default to `GOMAXPROCS` workers; `--workers=<n>` overrides both.
+The two pools are sized independently — `--scan-workers=<n>` (default `1`)
+for listing, `--compare-workers=<n>` (default `GOMAXPROCS`) for comparison —
+rather than sharing one knob. Listing is cheap, low-CPU directory-metadata
+I/O that doesn't benefit from scaling with core count, and on a mechanical
+disk more concurrent listing jobs can mean more seeking for no throughput
+gain; comparison, especially at the content level, does real per-byte CPU
+work alongside the I/O, so scaling it with `GOMAXPROCS` is the more
+defensible default of the two. Both flags only set the starting size —
+either pool can be resized while dirdiff is running via the `w` popup
+(§4.8), e.g. to react to how a particular pair of devices actually
+performs rather than guessing correctly up front.
 
 ### 8.3 Priority queue and reprioritization
 
@@ -409,6 +443,7 @@ plus the full reference via `?` (§4.5).
 | `l` | Switch the persistent compare-level setting: metadata (size+date) ↔ content (byte-for-byte) (remembered until changed again) |
 | `r` | Toggle the persistent recursive setting on/off (remembered; default on) |
 | `f` | Open the row-status filter popup: All / Left-only / Right-only / Equal / Different (§4.7; remembered like `l`/`r`) |
+| `w` | Open the worker-count popup: resize the scan/compare pools live (§4.8) |
 | `c` | Compare current directory's visible entries at the current level/recursive setting |
 | `n` / `N` | Jump to next / previous entry in the current directory whose status isn't "same" (only considers entries already compared at some level) |
 | `X` / `Esc` | Cancel/clear all pending (not-yet-started) queued comparison jobs |

@@ -8,6 +8,8 @@
 package session
 
 import (
+	"sync/atomic"
+
 	"github.com/m42cel/dirdiff/internal/diffmodel"
 	"github.com/m42cel/dirdiff/internal/scan"
 	"github.com/m42cel/dirdiff/internal/tree"
@@ -43,6 +45,15 @@ type Session struct {
 
 	listResults chan scan.ListResult
 	cmpResults  chan scan.CompareOutcome
+
+	// listTarget/cmpTarget are each pool's configured size (SPEC.md §8.2's
+	// --scan-workers/--compare-workers, adjustable at runtime); listLive/
+	// cmpLive count the goroutines actually running right now. Set*Workers
+	// only ever adds goroutines to grow a pool — shrinking asks the excess
+	// to exit itself (see shrinkIfExcess) rather than interrupting
+	// in-flight work, so live can briefly exceed or trail target.
+	listTarget, listLive atomic.Int32
+	cmpTarget, cmpLive   atomic.Int32
 }
 
 // New creates a Session, starts its worker pools, and enqueues the
@@ -51,7 +62,15 @@ type Session struct {
 // NotCompared, the whole tree is armed to auto-compare recursively at that
 // level in the background at Low priority as listing discovers it
 // (SPEC.md §2.1's --compare-level flag, size-date by default).
-func New(leftRoot, rightRoot string, workers int, autoLevel diffmodel.CompareLevel) *Session {
+//
+// listWorkers and compareWorkers size the two pools independently
+// (SPEC.md §8.2's --scan-workers/--compare-workers): listing is cheap,
+// low-CPU directory-metadata I/O that doesn't benefit from scaling with
+// core count (and on a mechanical disk, more concurrent listing jobs can
+// mean more seeking for no throughput gain), while comparison — especially
+// at the content level — does real per-byte CPU work alongside the I/O,
+// so scaling it with GOMAXPROCS is the more defensible default of the two.
+func New(leftRoot, rightRoot string, listWorkers, compareWorkers int, autoLevel diffmodel.CompareLevel) *Session {
 	root := tree.NewRoot()
 	s := &Session{
 		LeftRoot: leftRoot, RightRoot: rightRoot,
@@ -70,11 +89,8 @@ func New(leftRoot, rightRoot string, workers int, autoLevel diffmodel.CompareLev
 		root.PendingRecursiveLevel = autoLevel
 	}
 
-	if workers < 1 {
-		workers = 1
-	}
-	s.runListWorkers(workers)
-	s.runCompareWorkers(workers)
+	s.SetListWorkers(listWorkers)
+	s.SetCompareWorkers(compareWorkers)
 
 	s.enqueueList(root)
 
@@ -93,37 +109,95 @@ func (s *Session) Close() {
 	s.cmpQ.Close()
 }
 
-func (s *Session) runListWorkers(n int) {
-	for i := 0; i < n; i++ {
-		go func() {
-			for {
-				job, key, ok := s.listQ.Pop()
-				if !ok {
-					return
-				}
-				result := scan.DoList(job)
-				s.listQ.Done(key)
-				s.listResults <- result
-			}
-		}()
+func (s *Session) listWorkerLoop() {
+	for {
+		job, key, ok := s.listQ.PopUnless(func() bool { return shrinkIfExcess(&s.listLive, &s.listTarget) })
+		if !ok {
+			return
+		}
+		result := scan.DoList(job)
+		s.listQ.Done(key)
+		s.listResults <- result
 	}
 }
 
-func (s *Session) runCompareWorkers(n int) {
-	for i := 0; i < n; i++ {
-		go func() {
-			for {
-				job, key, ok := s.cmpQ.Pop()
-				if !ok {
-					return
-				}
-				outcome := scan.DoCompare(job)
-				s.cmpQ.Done(key)
-				s.cmpResults <- outcome
-			}
-		}()
+func (s *Session) compareWorkerLoop() {
+	for {
+		job, key, ok := s.cmpQ.PopUnless(func() bool { return shrinkIfExcess(&s.cmpLive, &s.cmpTarget) })
+		if !ok {
+			return
+		}
+		outcome := scan.DoCompare(job)
+		s.cmpQ.Done(key)
+		s.cmpResults <- outcome
 	}
 }
+
+// shrinkIfExcess atomically decrements live and reports true if live
+// currently exceeds target — a worker's own exit condition when its pool
+// is resized down. The load-compare-CAS loop means that if several
+// workers race this at once (e.g. right after a Wake()), exactly
+// live-target of them see true and exit, never more — a shrink can't
+// overshoot its new target regardless of how many idle workers wake
+// simultaneously.
+func shrinkIfExcess(live, target *atomic.Int32) bool {
+	for {
+		l, t := live.Load(), target.Load()
+		if l <= t {
+			return false
+		}
+		if live.CompareAndSwap(l, l-1) {
+			return true
+		}
+	}
+}
+
+// SetListWorkers resizes the listing pool to n (clamped to at least 1;
+// SPEC.md §8.2/§4.8's --scan-workers and its runtime 'w' popup
+// equivalent). Growing spawns the additional workers immediately;
+// shrinking never interrupts a job already in flight — the same "let it
+// finish" policy as CancelPendingCompares (SPEC.md §5.4) — it just asks
+// the excess to exit at its own next opportunity, promptly if currently
+// idle (via Queue.Wake) or otherwise once its current job completes.
+func (s *Session) SetListWorkers(n int) {
+	if n < 1 {
+		n = 1
+	}
+	old := s.listTarget.Swap(int32(n))
+	switch {
+	case int32(n) > old:
+		for i := old; i < int32(n); i++ {
+			s.listLive.Add(1)
+			go s.listWorkerLoop()
+		}
+	case int32(n) < old:
+		s.listQ.Wake()
+	}
+}
+
+// SetCompareWorkers is SetListWorkers for the comparison pool.
+func (s *Session) SetCompareWorkers(n int) {
+	if n < 1 {
+		n = 1
+	}
+	old := s.cmpTarget.Swap(int32(n))
+	switch {
+	case int32(n) > old:
+		for i := old; i < int32(n); i++ {
+			s.cmpLive.Add(1)
+			go s.compareWorkerLoop()
+		}
+	case int32(n) < old:
+		s.cmpQ.Wake()
+	}
+}
+
+// ListWorkers and CompareWorkers report each pool's currently configured
+// size (not how many of its goroutines happen to be live at this exact
+// instant — see listTarget's doc comment), for the UI's 'w' popup to
+// display and prefill for editing.
+func (s *Session) ListWorkers() int    { return int(s.listTarget.Load()) }
+func (s *Session) CompareWorkers() int { return int(s.cmpTarget.Load()) }
 
 func (s *Session) enqueueList(n *tree.Node) {
 	n.Listing = true

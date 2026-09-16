@@ -21,6 +21,13 @@ func (m Model) View() string {
 	if m.showFilterMenu {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, filterMenuView(m.filterCursor))
 	}
+	if m.showWorkersMenu {
+		content := workersMenuView(m)
+		if m.editingWorkers {
+			content = workersInputView(m)
+		}
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+	}
 
 	// Style.Width() already accounts for the style's own horizontal
 	// padding, so the only extra columns a rendered pane box adds beyond
@@ -399,9 +406,9 @@ func (m Model) renderStatusBar() string {
 	if m.recursive {
 		recursiveLabel = "on"
 	}
-	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s] ",
-		compareLevelLabel(m.compareLevel), recursiveLabel, filterLabel(m.filter))
-	hint := "↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · c compare · n/N diff · x cancel · ? help · q quit"
+	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s | scan workers: %d | compare workers: %d] ",
+		compareLevelLabel(m.compareLevel), recursiveLabel, filterLabel(m.filter), m.sess.ListWorkers(), m.sess.CompareWorkers())
+	hint := "↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare · n/N diff · x cancel · ? help · q quit"
 
 	return statusBarStyle.Render(stats) + "\n" + pendingStyle.Render(settings) + dimStyle.Render(hint)
 }
@@ -418,6 +425,7 @@ func helpView() string {
 		"l              switch compare level — metadata (size + date) ↔ content (byte-for-byte) (remembered)",
 		"r              toggle recursive on/off (remembered, default on)",
 		"f              open row-status filter popup: All / Left-only / Right-only / Equal / Different (remembered)",
+		"w              open worker-count popup: scan / compare pool size, Enter to type a new value",
 		"c              compare current directory's entries at the current level/recursive setting",
 		"n / N          jump to next / previous difference",
 		"x              cancel all pending (not yet started) comparisons",
@@ -449,6 +457,56 @@ func filterMenuView(cursor int) string {
 	}
 	lines = append(lines, "", dimStyle.Render("↑/↓ select · Enter apply · Esc cancel"))
 	return popupStyle.Render(strings.Join(lines, "\n"))
+}
+
+// workersMenuView renders the 'w' popup's row-select list (SPEC.md §4.8):
+// the scan and compare worker pools with their live values. Editing opens
+// a separate popup (workersInputView) rather than replacing a row's text
+// in place.
+func workersMenuView(m Model) string {
+	rows := workersMenuRows(m)
+
+	lines := []string{titleStyle.Render("Worker counts"), ""}
+	for i, r := range rows {
+		text := fmt.Sprintf("%s: %d", r.label, r.value)
+		if i == m.workersCursor {
+			lines = append(lines, cursorStyle.Render("> "+text))
+		} else {
+			lines = append(lines, "  "+text)
+		}
+	}
+
+	lines = append(lines, "", dimStyle.Render("↑/↓ select · Enter edit · Esc close"))
+	return popupStyle.Render(strings.Join(lines, "\n"))
+}
+
+// workersInputView renders the separate popup shown while editing one
+// row's value (SPEC.md §4.8): its own dialog, on top of the row-select
+// list, named after the row being edited and showing only the
+// in-progress typed digits.
+func workersInputView(m Model) string {
+	label := workersMenuRows(m)[m.workersCursor].label
+	lines := []string{
+		titleStyle.Render(label),
+		"",
+		"  " + m.workersInput + "▏",
+		"",
+		dimStyle.Render("0-9 type · Enter apply · Esc cancel"),
+	}
+	return popupStyle.Render(strings.Join(lines, "\n"))
+}
+
+func workersMenuRows(m Model) []struct {
+	label string
+	value int
+} {
+	return []struct {
+		label string
+		value int
+	}{
+		{"Scan workers", m.sess.ListWorkers()},
+		{"Compare workers", m.sess.CompareWorkers()},
+	}
 }
 
 func displayPath(root, rel string) string {

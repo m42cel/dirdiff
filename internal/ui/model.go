@@ -6,6 +6,7 @@
 package ui
 
 import (
+	"strconv"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -67,6 +68,17 @@ type Model struct {
 	filter         FilterStatus
 	showFilterMenu bool
 	filterCursor   int
+
+	// showWorkersMenu/workersCursor mirror showFilterMenu/filterCursor for
+	// the 'w' popup (SPEC.md §4.8), which edits session's own live worker
+	// counts directly rather than a Model-held setting — there's nothing
+	// here to apply on confirm beyond what editingWorkers/workersInput
+	// already did. workersCursor selects between the two rows: 0 = scan
+	// (listing) workers, 1 = compare workers.
+	showWorkersMenu bool
+	workersCursor   int
+	editingWorkers  bool
+	workersInput    string
 
 	spinnerFrame int
 
@@ -196,6 +208,51 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.showWorkersMenu {
+		if m.editingWorkers {
+			switch key {
+			case "enter":
+				m.applyWorkersInput()
+				m.editingWorkers = false
+				m.workersInput = ""
+				m.showWorkersMenu = false
+			case "backspace":
+				if len(m.workersInput) > 0 {
+					m.workersInput = m.workersInput[:len(m.workersInput)-1]
+				}
+			case "esc":
+				m.editingWorkers = false
+				m.workersInput = ""
+			default:
+				// Only digits are meaningful for a worker count; a max of
+				// 6 is far past any sane pool size but keeps the field
+				// from growing unbounded on a stuck/repeated key.
+				if len(key) == 1 && key[0] >= '0' && key[0] <= '9' && len(m.workersInput) < 6 {
+					m.workersInput += key
+				}
+			}
+			return m, nil
+		}
+		switch key {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "up":
+			if m.workersCursor > 0 {
+				m.workersCursor--
+			}
+		case "down":
+			if m.workersCursor < 1 {
+				m.workersCursor++
+			}
+		case "enter":
+			m.editingWorkers = true
+			m.workersInput = ""
+		case "w", "esc":
+			m.showWorkersMenu = false
+		}
+		return m, nil
+	}
+
 	switch key {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -234,6 +291,11 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 	case "f":
 		m.showFilterMenu = true
 		m.filterCursor = filterIndex(m.filter)
+	case "w":
+		m.showWorkersMenu = true
+		m.workersCursor = 0
+		m.editingWorkers = false
+		m.workersInput = ""
 	case "c":
 		m.triggerCompare()
 	case "n":
@@ -285,6 +347,28 @@ func (m *Model) cycleCompareLevel() {
 		m.compareLevel = diffmodel.Checksum
 	} else {
 		m.compareLevel = diffmodel.SizeMtime
+	}
+}
+
+// applyWorkersInput parses the 'w' popup's typed digits and resizes
+// whichever pool workersCursor has selected (SPEC.md §4.8). An empty
+// input (Enter pressed without typing anything) is treated as "cancel
+// this edit," not "set to 0" — Session.Set*Workers clamps to at least 1
+// anyway, but silently discarding an accidental bare Enter is friendlier
+// than resetting the pool to 1.
+func (m *Model) applyWorkersInput() {
+	if m.workersInput == "" {
+		return
+	}
+	n, err := strconv.Atoi(m.workersInput)
+	if err != nil {
+		return
+	}
+	switch m.workersCursor {
+	case 0:
+		m.sess.SetListWorkers(n)
+	case 1:
+		m.sess.SetCompareWorkers(n)
 	}
 }
 

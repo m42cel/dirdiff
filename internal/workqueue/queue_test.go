@@ -1,6 +1,9 @@
 package workqueue
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestPopOrdersByArrivalWhenNoFocusDistinguishes(t *testing.T) {
 	q := New[string]()
@@ -166,5 +169,52 @@ func TestCloseUnblocksPop(t *testing.T) {
 		close(done)
 	}()
 	q.Close()
+	<-done
+}
+
+func TestPopUnlessStillDeliversAJobWhenStopIsFalse(t *testing.T) {
+	q := New[string]()
+	q.Upsert("a", "a", nil)
+	payload, key, ok := q.PopUnless(func() bool { return false })
+	if !ok || payload != "a" || key != "a" {
+		t.Fatalf("PopUnless() = %q, %q, %v; want %q, %q, true", payload, key, ok, "a", "a")
+	}
+}
+
+func TestWakeLetsPopUnlessStopOnAnEmptyQueue(t *testing.T) {
+	q := New[string]()
+	done := make(chan struct{})
+	var stopSeen bool
+	go func() {
+		_, _, ok := q.PopUnless(func() bool { stopSeen = true; return true })
+		if ok {
+			t.Error("PopUnless() should return ok=false once stop reports true")
+		}
+		close(done)
+	}()
+	// Give the goroutine a chance to actually block in Wait() before
+	// waking it, so this test exercises the "already idle" path rather
+	// than stop() winning the race on first entry.
+	time.Sleep(20 * time.Millisecond)
+	q.Wake()
+	<-done
+	if !stopSeen {
+		t.Fatal("stop() was never invoked")
+	}
+}
+
+func TestWakeDoesNotStopPopUnlessWhenStopStaysFalse(t *testing.T) {
+	q := New[string]()
+	done := make(chan struct{})
+	go func() {
+		payload, _, ok := q.PopUnless(func() bool { return false })
+		if !ok || payload != "late" {
+			t.Errorf("PopUnless() = %q, %v; want %q, true", payload, ok, "late")
+		}
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	q.Wake() // must not cause the waiter to give up, since stop() is false
+	q.Upsert("late", "late", nil)
 	<-done
 }

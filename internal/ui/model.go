@@ -33,7 +33,7 @@ const (
 	// regardless of which fields the selected row populates.
 	detailsContentLines = 5
 	detailsPanelHeight  = detailsContentLines + 1 // +1 for the top border
-	statusBarHeight     = 2
+	statusBarHeight     = 3
 
 	// spinnerInterval is how often pending-work glyphs advance to their
 	// next animation frame (see animGlyph in view.go). Every such glyph

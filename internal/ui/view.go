@@ -406,11 +406,11 @@ func (m Model) renderStatusBar() string {
 	if m.recursive {
 		recursiveLabel = "on"
 	}
-	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s | scan workers: %d | compare workers: %d] ",
+	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s | scan workers: %d | compare workers: %d]",
 		compareLevelLabel(m.compareLevel), recursiveLabel, filterLabel(m.filter), m.sess.ListWorkers(), m.sess.CompareWorkers())
 	hint := "↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare · n/N diff · x cancel · ? help · q quit"
 
-	return statusBarStyle.Render(stats) + "\n" + pendingStyle.Render(settings) + dimStyle.Render(hint)
+	return statusBarStyle.Render(stats) + "\n" + pendingStyle.Render(settings) + "\n" + dimStyle.Render(hint)
 }
 
 func helpView() string {

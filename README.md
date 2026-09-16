@@ -82,8 +82,7 @@ legible without relying on color:
 | `←` | Only exists on the left |
 | `→` | Only exists on the right |
 | `!` | Error (e.g. permission denied) |
-| `.` / `..` / `...` | Pending — a file, or a directory's own row, queued or currently being compared (animated) |
-| `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | Directory rollup — a comparison is still pending somewhere in this subtree (animated Braille spinner) |
+| `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | Pending — a file's own comparison, or a directory rollup with a comparison still pending somewhere in its subtree, queued or in progress (animated Braille spinner) |
 | `?` | Not yet compared |
 
 Directories additionally roll up the worst status found anywhere in

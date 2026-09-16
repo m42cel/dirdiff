@@ -219,13 +219,15 @@ func typeGlyph(t diffmodel.EntryType) string {
 }
 
 // spinnerGlyphFrames is a growing "." / ".." / "..." sequence (SPEC.md
-// §6), used for a file's own comparison still in flight or queued, and
-// for a directory's own per-side listing-pending indicator.
+// §6), used for a directory's own per-side listing-pending indicator.
 var spinnerGlyphFrames = []string{".", "..", "..."}
 
-// comparePendingFrames animates a directory whose subtree still has a
-// comparison outstanding (SPEC.md §3.3/§6) — a distinct sequence so it
-// reads apart from spinnerGlyphFrames.
+// comparePendingFrames animates any row whose comparison is still in
+// flight or queued (SPEC.md §3.3/§6) — a file's own compare, or a
+// directory whose subtree still has one outstanding. Both share the same
+// braille sequence deliberately: there's no user-visible distinction
+// between "this file is comparing" and "something inside this directory
+// is comparing".
 var comparePendingFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // animGlyph indexes any of the frame sequences above by the shared
@@ -275,7 +277,7 @@ func statusGlyph(n *tree.Node, sess *session.Session, spinnerFrame int) (string,
 	}
 
 	if sess.IsComparePending(n.RelPath) {
-		return animGlyph(spinnerGlyphFrames, spinnerFrame), pendingStyle
+		return animGlyph(comparePendingFrames, spinnerFrame), pendingStyle
 	}
 	switch n.Result {
 	case diffmodel.Same:
@@ -394,7 +396,7 @@ func helpView() string {
 		"Status glyphs:",
 		sameStyle.Render("  =") + " same        " + differsStyle.Render("≠") + " differs        " + errorStyle.Render("!") + " error/unreadable",
 		missingStyle.Render("  ←") + " only on left" + "  " + missingStyle.Render("→") + " only on right  " + dimStyle.Render("?") + " not yet compared",
-		pendingStyle.Render("  ...") + " comparing: file, gutter (animated)  " + pendingStyle.Render("⠋") + " comparing: directory subtree, gutter (animated)",
+		pendingStyle.Render("  ⠋") + " comparing: file or directory subtree, gutter (animated)",
 		pendingStyle.Render("  name...") + " directory: listing pending on that side, next to the name (animated)",
 		"",
 		dimStyle.Render("press ? or esc to close"),

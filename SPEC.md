@@ -251,13 +251,18 @@ limited-color terminals.
 | Missing on right (left-only) | `←` (points to the side it's on) | yellow |
 | Missing on left (right-only) | `→` (points to the side it's on) | yellow |
 | Error / unreadable | `!` | magenta |
-| Pending / in-progress (single file, own comparison) | animated `.` → `..` → `...` | gray/blue |
-| Unknown (not yet compared) | `·` (dim) | dim/gray |
+| Pending / in-progress (single file, own comparison) | animated Braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) | gray/blue |
+| Unknown (not yet compared) | `?` (dim) | dim/gray |
 | Directory rollup: contains differences | e.g. bold `≠` | red |
 | Directory rollup: clean so far | e.g. dim `=` | green |
 | Directory rollup: not yet known | (no rollup glyph) | dim/gray |
 | Directory rollup: comparing pending anywhere in subtree (gutter) | animated Braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) | blue |
 | Directory: listing pending on a given side's subtree (next to the name, that pane only) | animated `.` → `..` → `...` | blue |
+
+The single-file and directory-rollup pending indicators intentionally
+share the same Braille spinner — there's no user-visible distinction
+between "this file is comparing" and "something inside this directory
+is comparing".
 
 The listing-pending indicator is per-pane, not per-row: a directory
 missing on one side never shows it on that (nonexistent) side.

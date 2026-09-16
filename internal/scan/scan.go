@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
@@ -34,10 +35,22 @@ type ListResult struct {
 
 // DoList lists job.LeftAbs and job.RightAbs and merges them by (name,
 // type) per SPEC.md §3.1, sorted with directories first, then
-// alphabetically (SPEC.md §4.1).
+// alphabetically (SPEC.md §4.1). The two sides are read concurrently, not
+// sequentially: on two different physical devices (or even just two
+// distant regions of the same one) the job's latency is then bounded by
+// the slower side alone, instead of the sum of both.
 func DoList(job ListJob) ListResult {
+	var right []typedEntry
+	var rightErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		right, rightErr = readDirTyped(job.RightAbs)
+	}()
+
 	left, leftErr := readDirTyped(job.LeftAbs)
-	right, rightErr := readDirTyped(job.RightAbs)
+	wg.Wait()
 
 	type key struct {
 		name string
@@ -183,7 +196,12 @@ func compareSymlink(job CompareJob) CompareOutcome {
 }
 
 // filesEqual does a streaming, chunked byte-for-byte comparison, short
-// circuiting as soon as a differing chunk is found (SPEC.md §2.1).
+// circuiting as soon as a differing chunk is found (SPEC.md §2.1). Each
+// chunk pair is read concurrently, not sequentially — on two different
+// physical devices (or even just two distant regions of the same one)
+// this bounds a chunk's read latency by the slower side alone rather
+// than the sum of both, the same reasoning as DoList's concurrent
+// left/right reads.
 func filesEqual(leftPath, rightPath string) (bool, error) {
 	lf, err := os.Open(leftPath)
 	if err != nil {
@@ -201,8 +219,17 @@ func filesEqual(leftPath, rightPath string) (bool, error) {
 	rb := make([]byte, chunkSize)
 
 	for {
+		var rn int
+		var rerr error
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rn, rerr = io.ReadFull(rf, rb)
+		}()
+
 		ln, lerr := io.ReadFull(lf, lb)
-		rn, rerr := io.ReadFull(rf, rb)
+		wg.Wait()
 
 		if ln != rn || !bytes.Equal(lb[:ln], rb[:rn]) {
 			return false, nil

@@ -30,6 +30,8 @@
 #     near the end, to exercise the chunked checksum comparison
 #   - a directory with 40 entries to exercise scrolling/virtualization
 #   - dotfiles, both identical and differing
+#   - a file and a directory with names much longer than a pane is ever
+#     wide, to exercise ellipsis truncation instead of line-wrapping
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -216,6 +218,13 @@ for i in $(seq 1 40); do
 		put R "many_entries/$name" "right content $i"
 	fi
 done
+
+### A file and a directory with very long names, to exercise ellipsis
+### truncation instead of line-wrapping in the pane rows.
+
+put B this_is_a_very_long_file_name_that_is_much_wider_than_any_reasonably_sized_terminal_pane_could_ever_display_in_full.txt "long name, short content"
+
+put B this_is_a_very_long_directory_name_that_is_much_wider_than_any_reasonably_sized_terminal_pane_could_ever_display_in_full/inside.txt "content inside the long-named directory"
 
 echo "Generated test tree at: $OUT"
 echo "Try it with:"

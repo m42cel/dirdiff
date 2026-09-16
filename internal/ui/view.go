@@ -55,7 +55,12 @@ func (m Model) View() string {
 		titleCellStyle.Width(rightWidth+paneOverhead).Render(rightTitle),
 	)
 
-	leftRows, gutterRows, rightRows := m.renderPanes(listHeight)
+	// paneStyle's own horizontal padding (1 column each side) comes out of
+	// leftWidth/rightWidth before any row text is rendered inside the box,
+	// so row names must be truncated to this narrower content width, not
+	// the box width, or a long name overflows into a wrapped second line.
+	const panePadding = 2
+	leftRows, gutterRows, rightRows := m.renderPanes(listHeight, leftWidth-panePadding, rightWidth-panePadding)
 	leftContent := strings.Join(leftRows, "\n")
 	rightContent := strings.Join(rightRows, "\n")
 	// The gutter has no border of its own, but the panes on either side
@@ -81,7 +86,7 @@ func (m Model) View() string {
 // glyph (SPEC.md §4.3) — everything under a one-sided directory is, by
 // construction, one-sided too, so this only ever triggers at the
 // directory-presence level, not per file.
-func (m Model) renderPanes(height int) (left, gutter, right []string) {
+func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, right []string) {
 	if !m.cursorDir.Listed {
 		msg := []string{dimStyle.Render("Loading…")}
 		return msg, []string{""}, msg
@@ -97,7 +102,7 @@ func (m Model) renderPanes(height int) (left, gutter, right []string) {
 			end = len(children)
 		}
 		for i := m.scrollOffset; i < end; i++ {
-			l, g, r := renderRowTriple(children[i], m.sess, m.spinnerFrame, i == m.cursorIdx)
+			l, g, r := renderRowTriple(children[i], m.sess, m.spinnerFrame, i == m.cursorIdx, leftWidth, rightWidth)
 			left = append(left, l)
 			gutter = append(gutter, g)
 			right = append(right, r)
@@ -124,7 +129,7 @@ func (m Model) renderPanes(height int) (left, gutter, right []string) {
 // entry name on each side present is colored to match (SPEC.md §6: a
 // distinct glyph and a distinct color per status, glyph never dropped
 // in favor of color alone).
-func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, selected bool) (left, gutter, right string) {
+func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, selected bool, leftWidth, rightWidth int) (left, gutter, right string) {
 	glyph, style := statusGlyph(n, sess, spinnerFrame)
 	gutterCell := style.Render(glyph)
 
@@ -136,6 +141,24 @@ func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, sele
 	case diffmodel.RightOnly:
 		leftName = ""
 	}
+
+	// The listing-pending spinner appended below is its own unhighlighted
+	// suffix, so a name long enough to need truncating must leave it room
+	// up front — sized to the suffix's widest frame (" ..."), not
+	// whichever frame happens to be showing, so the row never reflows as
+	// the animation ticks.
+	const pendingSuffixWidth = 4
+	leftBudget, rightBudget := leftWidth, rightWidth
+	if n.IsDir() {
+		if n.PendingListingLeft > 0 {
+			leftBudget -= pendingSuffixWidth
+		}
+		if n.PendingListingRight > 0 {
+			rightBudget -= pendingSuffixWidth
+		}
+	}
+	leftName = truncate(leftName, leftBudget)
+	rightName = truncate(rightName, rightBudget)
 
 	left = placeholderIfEmpty(styleIfNotEmpty(leftName, style))
 	right = placeholderIfEmpty(styleIfNotEmpty(rightName, style))

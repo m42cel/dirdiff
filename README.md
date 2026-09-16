@@ -82,12 +82,17 @@ legible without relying on color:
 | `←` | Only exists on the left |
 | `→` | Only exists on the right |
 | `!` | Error (e.g. permission denied) |
-| `.` / `..` / `...` | Pending — queued or currently being compared (animated) |
+| `.` / `..` / `...` | Pending — a file, or a directory's own row, queued or currently being compared (animated) |
+| `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | Directory rollup — a comparison is still pending somewhere in this subtree (animated Braille spinner) |
 | `?` | Not yet compared |
 
 Directories additionally roll up the worst status found anywhere in
 their subtree, so you can spot which subtrees contain differences
-without opening every one.
+without opening every one; the Braille spinner above takes priority
+over a rollup result while work is still outstanding underneath, so a
+subtree in progress is never mistaken for "clean so far". Listing
+progress is shown separately, per side, next to a directory's name
+(animated `.` / `..` / `...`) rather than in the shared glyph column.
 
 ## Development
 

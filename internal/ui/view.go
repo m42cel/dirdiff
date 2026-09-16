@@ -266,7 +266,7 @@ func statusGlyph(n *tree.Node, sess *session.Session, spinnerFrame int) (string,
 		if n.ListErrLeft != nil || n.ListErrRight != nil {
 			return "!", errorStyle
 		}
-		switch n.Rollup {
+		switch n.Result {
 		case diffmodel.Same:
 			return "=", sameStyle
 		case diffmodel.Differs, diffmodel.CompareError:

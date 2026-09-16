@@ -324,9 +324,6 @@ func isDiffering(n *tree.Node) bool {
 	if n.Presence != diffmodel.Both {
 		return true
 	}
-	if n.IsDir() {
-		return n.Rollup == diffmodel.Differs || n.Rollup == diffmodel.CompareError
-	}
 	return n.Result == diffmodel.Differs || n.Result == diffmodel.CompareError
 }
 

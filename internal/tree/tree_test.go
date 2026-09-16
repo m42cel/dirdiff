@@ -67,8 +67,8 @@ func TestRollupPropagatesUpwardOnDifference(t *testing.T) {
 	ApplyListing(b, []diffmodel.ListedChild{{Name: "f.txt", Type: diffmodel.File, Presence: diffmodel.Both}}, nil, nil)
 	f := b.Children[0]
 
-	if root.Rollup != diffmodel.Unknown {
-		t.Fatalf("root.Rollup = %v before any compare; want Unknown", root.Rollup)
+	if root.Result != diffmodel.Unknown {
+		t.Fatalf("root.Result = %v before any compare; want Unknown", root.Result)
 	}
 
 	ApplyCompareResult(f, diffmodel.Checksum, diffmodel.Differs, nil, nil)
@@ -76,14 +76,14 @@ func TestRollupPropagatesUpwardOnDifference(t *testing.T) {
 	if f.Result != diffmodel.Differs {
 		t.Fatalf("f.Result = %v; want Differs", f.Result)
 	}
-	if b.Rollup != diffmodel.Differs {
-		t.Fatalf("b.Rollup = %v; want Differs", b.Rollup)
+	if b.Result != diffmodel.Differs {
+		t.Fatalf("b.Result = %v; want Differs", b.Result)
 	}
-	if a.Rollup != diffmodel.Differs {
-		t.Fatalf("a.Rollup (grandparent) = %v; want Differs to propagate all the way up", a.Rollup)
+	if a.Result != diffmodel.Differs {
+		t.Fatalf("a.Result (grandparent) = %v; want Differs to propagate all the way up", a.Result)
 	}
-	if root.Rollup != diffmodel.Differs {
-		t.Fatalf("root.Rollup = %v; want Differs", root.Rollup)
+	if root.Result != diffmodel.Differs {
+		t.Fatalf("root.Result = %v; want Differs", root.Result)
 	}
 }
 
@@ -93,8 +93,8 @@ func TestRollupTreatsOneSidedChildAsDiffers(t *testing.T) {
 		{Name: "onlyleft.txt", Type: diffmodel.File, Presence: diffmodel.LeftOnly},
 	}, nil, nil)
 
-	if root.Rollup != diffmodel.Differs {
-		t.Fatalf("root.Rollup = %v; want Differs for a one-sided child, even with no compare run", root.Rollup)
+	if root.Result != diffmodel.Differs {
+		t.Fatalf("root.Result = %v; want Differs for a one-sided child, even with no compare run", root.Result)
 	}
 }
 
@@ -107,8 +107,8 @@ func TestRollupCleanWhenAllSame(t *testing.T) {
 	for _, c := range root.Children {
 		ApplyCompareResult(c, diffmodel.Checksum, diffmodel.Same, nil, nil)
 	}
-	if root.Rollup != diffmodel.Same {
-		t.Fatalf("root.Rollup = %v; want Same when every compared child is Same", root.Rollup)
+	if root.Result != diffmodel.Same {
+		t.Fatalf("root.Result = %v; want Same when every compared child is Same", root.Result)
 	}
 }
 
@@ -120,11 +120,11 @@ func TestRollupSameWhenEmptyOnBothSides(t *testing.T) {
 	empty := root.Children[0]
 	ApplyListing(empty, nil, nil, nil)
 
-	if empty.Rollup != diffmodel.Same {
-		t.Fatalf("empty.Rollup = %v; want Same for a directory listed on both sides with no children", empty.Rollup)
+	if empty.Result != diffmodel.Same {
+		t.Fatalf("empty.Result = %v; want Same for a directory listed on both sides with no children", empty.Result)
 	}
-	if root.Rollup != diffmodel.Same {
-		t.Fatalf("root.Rollup = %v; want Same to propagate up through an empty-both-sides child", root.Rollup)
+	if root.Result != diffmodel.Same {
+		t.Fatalf("root.Result = %v; want Same to propagate up through an empty-both-sides child", root.Result)
 	}
 }
 
@@ -134,8 +134,8 @@ func TestRollupListErrIsError(t *testing.T) {
 	a := root.Children[0]
 	ApplyListing(a, nil, errPermission, nil)
 
-	if a.Rollup != diffmodel.CompareError {
-		t.Fatalf("a.Rollup = %v; want CompareError when the directory itself failed to list", a.Rollup)
+	if a.Result != diffmodel.CompareError {
+		t.Fatalf("a.Result = %v; want CompareError when the directory itself failed to list", a.Result)
 	}
 }
 

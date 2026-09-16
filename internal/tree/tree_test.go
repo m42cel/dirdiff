@@ -139,6 +139,74 @@ func TestRollupListErrIsError(t *testing.T) {
 	}
 }
 
+func TestRollupLevelUniformAcrossChildren(t *testing.T) {
+	root := NewRoot()
+	ApplyListing(root, []diffmodel.ListedChild{
+		{Name: "a.txt", Type: diffmodel.File, Presence: diffmodel.Both},
+		{Name: "b.txt", Type: diffmodel.File, Presence: diffmodel.Both},
+	}, nil, nil)
+	for _, c := range root.Children {
+		ApplyCompareResult(c, diffmodel.Checksum, diffmodel.Same, nil, nil)
+	}
+	if root.Level != diffmodel.Checksum || root.LevelMixed {
+		t.Fatalf("root.Level=%v LevelMixed=%v; want Checksum/false when every child was compared at the same level", root.Level, root.LevelMixed)
+	}
+}
+
+func TestRollupLevelMixedAcrossChildren(t *testing.T) {
+	root := NewRoot()
+	ApplyListing(root, []diffmodel.ListedChild{
+		{Name: "a.txt", Type: diffmodel.File, Presence: diffmodel.Both},
+		{Name: "b.txt", Type: diffmodel.File, Presence: diffmodel.Both},
+	}, nil, nil)
+	ApplyCompareResult(root.Children[0], diffmodel.SizeMtime, diffmodel.Same, nil, nil)
+	ApplyCompareResult(root.Children[1], diffmodel.Checksum, diffmodel.Same, nil, nil)
+
+	if !root.LevelMixed {
+		t.Fatalf("root.LevelMixed = false; want true when children were compared at different levels")
+	}
+	if root.Level != diffmodel.Checksum {
+		t.Fatalf("root.Level = %v; want Checksum, the deepest level seen", root.Level)
+	}
+}
+
+func TestRollupLevelIgnoresUncomparedAndOneSidedChildren(t *testing.T) {
+	root := NewRoot()
+	ApplyListing(root, []diffmodel.ListedChild{
+		{Name: "a.txt", Type: diffmodel.File, Presence: diffmodel.Both},
+		{Name: "b.txt", Type: diffmodel.File, Presence: diffmodel.Both},
+		{Name: "onlyleft.txt", Type: diffmodel.File, Presence: diffmodel.LeftOnly},
+	}, nil, nil)
+	ApplyCompareResult(root.Children[0], diffmodel.SizeMtime, diffmodel.Same, nil, nil)
+	// b.txt is left NotCompared, and onlyleft.txt can never be compared.
+
+	if root.LevelMixed {
+		t.Fatalf("root.LevelMixed = true; want false — an uncompared or one-sided child shouldn't count as a disagreement")
+	}
+	if root.Level != diffmodel.SizeMtime {
+		t.Fatalf("root.Level = %v; want SizeMtime, the only level actually observed", root.Level)
+	}
+}
+
+func TestRollupLevelPropagatesFromNestedDirectory(t *testing.T) {
+	root := NewRoot()
+	ApplyListing(root, []diffmodel.ListedChild{{Name: "a", Type: diffmodel.Dir, Presence: diffmodel.Both}}, nil, nil)
+	a := root.Children[0]
+	ApplyListing(a, []diffmodel.ListedChild{
+		{Name: "x.txt", Type: diffmodel.File, Presence: diffmodel.Both},
+		{Name: "y.txt", Type: diffmodel.File, Presence: diffmodel.Both},
+	}, nil, nil)
+	ApplyCompareResult(a.Children[0], diffmodel.SizeMtime, diffmodel.Same, nil, nil)
+	ApplyCompareResult(a.Children[1], diffmodel.Checksum, diffmodel.Same, nil, nil)
+
+	if !a.LevelMixed {
+		t.Fatalf("a.LevelMixed = false; want true")
+	}
+	if !root.LevelMixed {
+		t.Fatalf("root.LevelMixed = false; want the mixed flag to propagate up through a directory child")
+	}
+}
+
 var errPermission = &permErr{}
 
 type permErr struct{}

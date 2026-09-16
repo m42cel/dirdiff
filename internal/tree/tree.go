@@ -25,9 +25,15 @@ type Node struct {
 	RelPath  string
 	Parent   *Node
 
-	Level  diffmodel.CompareLevel
-	Result diffmodel.CompareResult
-	Err    error
+	// Level is the deepest CompareLevel actually run for a file/symlink
+	// node. For a directory, it's rolled up instead (see rollupLevel):
+	// the level shared by every descendant compared so far, or the
+	// deepest one seen if they disagree — in which case LevelMixed is
+	// also set, since no single level then describes the subtree.
+	Level      diffmodel.CompareLevel
+	LevelMixed bool
+	Result     diffmodel.CompareResult
+	Err        error
 
 	HaveStat              bool
 	LeftSize, RightSize   int64
@@ -154,6 +160,7 @@ func AdjustPendingCompare(n *Node, delta int) {
 func recomputeResultUpward(n *Node) {
 	for n != nil {
 		n.Result = rollupResult(n)
+		n.Level, n.LevelMixed = rollupLevel(n)
 		n = n.Parent
 	}
 }
@@ -190,6 +197,47 @@ func ownStatus(n *Node) diffmodel.CompareResult {
 		return diffmodel.Differs
 	}
 	return n.Result
+}
+
+// rollupLevel computes a directory's own "compared by" level from its
+// children, the same way rollupResult computes Result: a child directory
+// already carries its own rolled-up Level/LevelMixed, so one pass over
+// direct children is enough. A child not yet compared (Level ==
+// NotCompared) is excluded rather than treated as a disagreement — the
+// same way rollupResult lets an uncompared child sit alongside Same
+// children without pulling the result down to Unknown — since "hasn't
+// run yet" isn't a level the subtree was actually compared at. A
+// one-sided child has no comparison to report and is excluded too.
+func rollupLevel(n *Node) (diffmodel.CompareLevel, bool) {
+	level := diffmodel.NotCompared
+	mixed := false
+	for _, c := range n.Children {
+		var cLevel diffmodel.CompareLevel
+		switch {
+		case c.IsDir():
+			cLevel = c.Level
+			if c.LevelMixed {
+				mixed = true
+			}
+		case c.Presence == diffmodel.Both:
+			cLevel = c.Level
+		default:
+			continue
+		}
+		if cLevel == diffmodel.NotCompared {
+			continue
+		}
+		switch {
+		case level == diffmodel.NotCompared:
+			level = cLevel
+		case cLevel != level:
+			mixed = true
+			if cLevel > level {
+				level = cLevel
+			}
+		}
+	}
+	return level, mixed
 }
 
 var resultRank = map[diffmodel.CompareResult]int{

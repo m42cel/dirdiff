@@ -303,11 +303,8 @@ func (m Model) renderDetails() string {
 		lines = append(lines, fmt.Sprintf("left:  size=%-10d mtime=%s", n.LeftSize, n.LeftMtime.Local().Format("2006-01-02 15:04:05")))
 		lines = append(lines, fmt.Sprintf("right: size=%-10d mtime=%s", n.RightSize, n.RightMtime.Local().Format("2006-01-02 15:04:05")))
 	}
-	// Directories roll up results from potentially many descendants
-	// compared at different levels, so a single "compared at" level isn't
-	// meaningful for them — this line is file/symlink-only.
-	if n.Presence == diffmodel.Both && !n.IsDir() {
-		lines = append(lines, "compared by: "+compareLevelLabel(n.Level))
+	if n.Presence == diffmodel.Both {
+		lines = append(lines, "compared by: "+nodeCompareLevelLabel(n))
 	}
 	if n.Err != nil {
 		lines = append(lines, errorStyle.Render("error: "+oneLine(n.Err.Error())))
@@ -348,6 +345,17 @@ func compareLevelLabel(level diffmodel.CompareLevel) string {
 	default:
 		return "none"
 	}
+}
+
+// nodeCompareLevelLabel is compareLevelLabel for a tree.Node, covering a
+// directory whose descendants were compared at more than one level
+// (tree.rollupLevel's LevelMixed) as "mixed" instead of picking one of
+// them arbitrarily.
+func nodeCompareLevelLabel(n *tree.Node) string {
+	if n.IsDir() && n.LevelMixed {
+		return "mixed"
+	}
+	return compareLevelLabel(n.Level)
 }
 
 func presenceLabel(p diffmodel.Presence) string {

@@ -151,7 +151,10 @@ A panel (e.g. bottom of screen) shows full metadata for the row under the
 cursor, once known: size, mtime, and comparison level/result for both
 sides. For a file/symlink row, it names the deepest level actually run so
 far (e.g. "metadata" vs. "content") so the user can tell a cheap
-size+date match from an actual byte-for-byte verification. Populates
+size+date match from an actual byte-for-byte verification. A directory
+row shows the same "compared by" line, rolled up from its descendants
+(§3.3): the level shared by everything compared under it so far, or
+"mixed" if descendants were compared at different levels. Populates
 progressively as background jobs resolve that data (shows "—" / a pending
 marker for fields not yet fetched).
 

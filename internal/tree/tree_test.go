@@ -128,6 +128,28 @@ func TestRollupSameWhenEmptyOnBothSides(t *testing.T) {
 	}
 }
 
+// TestRollupUncomparedOutranksSame guards against a vacuously-Same empty
+// subdirectory dragging an otherwise-uncompared parent down to Same: an
+// empty dir sibling contributes nothing to say about the uncompared
+// sibling, so the parent must stay Unknown ("not compared") rather than
+// reporting Same before the other child has been checked at all.
+func TestRollupUncomparedOutranksSame(t *testing.T) {
+	root := NewRoot()
+	ApplyListing(root, []diffmodel.ListedChild{
+		{Name: "empty", Type: diffmodel.Dir, Presence: diffmodel.Both},
+		{Name: "f.txt", Type: diffmodel.File, Presence: diffmodel.Both},
+	}, nil, nil)
+	empty := root.Children[0]
+	ApplyListing(empty, nil, nil, nil)
+
+	if empty.Result != diffmodel.Same {
+		t.Fatalf("empty.Result = %v; want Same for a directory listed on both sides with no children", empty.Result)
+	}
+	if root.Result != diffmodel.Unknown {
+		t.Fatalf("root.Result = %v; want Unknown while f.txt hasn't been compared yet, even though the empty sibling is Same", root.Result)
+	}
+}
+
 func TestRollupListErrIsError(t *testing.T) {
 	root := NewRoot()
 	ApplyListing(root, []diffmodel.ListedChild{{Name: "a", Type: diffmodel.Dir, Presence: diffmodel.Both}}, nil, nil)

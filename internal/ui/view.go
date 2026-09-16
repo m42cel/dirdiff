@@ -251,9 +251,21 @@ func statusGlyph(n *tree.Node, sess *session.Session, spinnerFrame int) (string,
 	}
 
 	if n.IsDir() {
-		// A directory whose subtree still has a comparison outstanding
-		// shows that instead of its rollup glyph — the rollup only
-		// reflects completed results (SPEC.md §3.3) and would otherwise
+		if n.ListErrLeft != nil || n.ListErrRight != nil {
+			return "!", errorStyle
+		}
+		// Differs/CompareError is checked before PendingCompare: it's
+		// already the worst possible rollup (SPEC.md §3.3's monotonicity),
+		// so further comparisons still in flight elsewhere in the subtree
+		// can't change it back — showing the spinner here would just
+		// flicker the glyph between "≠" and pending for no reason.
+		if n.Result == diffmodel.Differs || n.Result == diffmodel.CompareError {
+			return "≠", differsStyle
+		}
+		// Otherwise (Same or not-yet-known), a comparison still
+		// outstanding anywhere in the subtree means the rollup isn't
+		// final yet — show that instead of the rollup glyph, since the
+		// rollup only reflects completed results and would otherwise
 		// misreport a subtree as "clean so far" or "not yet known" while
 		// work is still in flight beneath it. Listing-pending is shown
 		// separately, per side, next to the name (renderRowTriple) —
@@ -263,14 +275,9 @@ func statusGlyph(n *tree.Node, sess *session.Session, spinnerFrame int) (string,
 		if n.PendingCompare > 0 {
 			return animGlyph(comparePendingFrames, spinnerFrame), pendingStyle
 		}
-		if n.ListErrLeft != nil || n.ListErrRight != nil {
-			return "!", errorStyle
-		}
 		switch n.Result {
 		case diffmodel.Same:
 			return "=", sameStyle
-		case diffmodel.Differs, diffmodel.CompareError:
-			return "≠", differsStyle
 		default:
 			return "?", dimStyle
 		}

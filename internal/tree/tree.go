@@ -180,7 +180,12 @@ func rollupResult(n *Node) diffmodel.CompareResult {
 	if n.Listed && len(n.Children) == 0 {
 		return diffmodel.Same
 	}
-	worst := diffmodel.Unknown
+	// Same is the fold's bottom sentinel, not Unknown: resultRank ranks
+	// Unknown above Same, so starting from Unknown would make the loop
+	// stick there even once every real child comes back Same. The loop
+	// always runs at least one iteration here — the true "no children"
+	// case already returned above.
+	worst := diffmodel.Same
 	for _, c := range n.Children {
 		worst = worstResult(worst, ownStatus(c))
 	}
@@ -203,10 +208,11 @@ func ownStatus(n *Node) diffmodel.CompareResult {
 // children, the same way rollupResult computes Result: a child directory
 // already carries its own rolled-up Level/LevelMixed, so one pass over
 // direct children is enough. A child not yet compared (Level ==
-// NotCompared) is excluded rather than treated as a disagreement — the
-// same way rollupResult lets an uncompared child sit alongside Same
-// children without pulling the result down to Unknown — since "hasn't
-// run yet" isn't a level the subtree was actually compared at. A
+// NotCompared) is excluded rather than treated as a disagreement, since
+// "hasn't run yet" isn't a level the subtree was actually compared at —
+// unlike rollupResult, where an uncompared child does pull the aggregate
+// down (to Unknown), since Result answers "can we call this Same yet?"
+// while Level only describes the levels actually used so far. A
 // one-sided child has no comparison to report and is excluded too.
 func rollupLevel(n *Node) (diffmodel.CompareLevel, bool) {
 	level := diffmodel.NotCompared
@@ -240,9 +246,15 @@ func rollupLevel(n *Node) (diffmodel.CompareLevel, bool) {
 	return level, mixed
 }
 
+// resultRank orders CompareResult for rollup purposes only — not the
+// same ordering as diffmodel.CompareResult's own iota values. Unknown
+// (not yet compared) outranks Same: a directory can't be declared Same
+// while any child is still uncompared, since that child could yet turn
+// out to differ. Differs/CompareError outrank everything, since a single
+// confirmed difference makes the rest moot.
 var resultRank = map[diffmodel.CompareResult]int{
-	diffmodel.Unknown:      0,
-	diffmodel.Same:         1,
+	diffmodel.Same:         0,
+	diffmodel.Unknown:      1,
 	diffmodel.Differs:      2,
 	diffmodel.CompareError: 2,
 }

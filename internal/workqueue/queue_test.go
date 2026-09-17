@@ -203,6 +203,32 @@ func TestWakeLetsPopUnlessStopOnAnEmptyQueue(t *testing.T) {
 	}
 }
 
+func TestPopUnlessStopsImmediatelyEvenWithQueuedBacklog(t *testing.T) {
+	q := New[string]()
+	q.Upsert("a", "a", nil)
+	q.Upsert("b", "b", nil)
+	q.Upsert("c", "c", nil)
+
+	_, _, ok := q.PopUnless(func() bool { return true })
+	if ok {
+		t.Fatal("PopUnless() should return ok=false when stop() is true, even with a non-empty backlog")
+	}
+	if q.PendingCount() != 3 {
+		t.Fatalf("PendingCount() = %d; want 3 (a stopping worker must not consume a queued job)", q.PendingCount())
+	}
+}
+
+func TestPopUnlessStillDrainsBacklogOnCloseWhenStopStaysFalse(t *testing.T) {
+	q := New[string]()
+	q.Upsert("a", "a", nil)
+	q.Close()
+
+	payload, key, ok := q.PopUnless(func() bool { return false })
+	if !ok || payload != "a" || key != "a" {
+		t.Fatalf("PopUnless() = %q, %q, %v; want %q, %q, true (Close() must not drop already-queued jobs)", payload, key, ok, "a", "a")
+	}
+}
+
 func TestWakeDoesNotStopPopUnlessWhenStopStaysFalse(t *testing.T) {
 	q := New[string]()
 	done := make(chan struct{})

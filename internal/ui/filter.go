@@ -1,24 +1,67 @@
 package ui
 
 import (
+	"strings"
+
 	"github.com/m42cel/dirdiff/internal/diffmodel"
 	"github.com/m42cel/dirdiff/internal/tree"
 )
 
-// FilterStatus is the persistent row-status filter setting (SPEC.md §4.7),
-// alongside compareLevel and recursive.
+// FilterStatus is one row-status filter option (SPEC.md §4.7).
 type FilterStatus int
 
 const (
-	FilterAll FilterStatus = iota
-	FilterLeftOnly
+	FilterLeftOnly FilterStatus = iota
 	FilterRightOnly
 	FilterEqual
 	FilterDifferent
 )
 
 // allFilters is the popup's fixed option order.
-var allFilters = []FilterStatus{FilterAll, FilterLeftOnly, FilterRightOnly, FilterEqual, FilterDifferent}
+var allFilters = []FilterStatus{FilterLeftOnly, FilterRightOnly, FilterEqual, FilterDifferent}
+
+// FilterSet is the persistent, multi-select row-status filter (SPEC.md
+// §4.7): a row is visible if it matches any status in the set (OR
+// combined — the four statuses are mutually exclusive per row, so AND
+// would always be empty for more than one selection). Every status
+// selected is the unfiltered, "show everything" state.
+type FilterSet map[FilterStatus]bool
+
+// defaultFilterSet is dirdiff's starting filter: every status selected,
+// i.e. unfiltered.
+func defaultFilterSet() FilterSet {
+	s := make(FilterSet, len(allFilters))
+	for _, f := range allFilters {
+		s[f] = true
+	}
+	return s
+}
+
+func cloneFilterSet(s FilterSet) FilterSet {
+	out := make(FilterSet, len(s))
+	for k, v := range s {
+		out[k] = v
+	}
+	return out
+}
+
+func (s FilterSet) isAll() bool {
+	for _, f := range allFilters {
+		if !s[f] {
+			return false
+		}
+	}
+	return true
+}
+
+func (s FilterSet) isEmpty() bool {
+	for _, f := range allFilters {
+		if s[f] {
+			return false
+		}
+	}
+	return true
+}
 
 func filterLabel(f FilterStatus) string {
 	switch f {
@@ -28,30 +71,38 @@ func filterLabel(f FilterStatus) string {
 		return "right only"
 	case FilterEqual:
 		return "equal"
-	case FilterDifferent:
-		return "different"
 	default:
-		return "all"
+		return "different"
 	}
 }
 
-func filterIndex(f FilterStatus) int {
-	for i, v := range allFilters {
-		if v == f {
-			return i
+// filterSetLabel summarizes s for the status bar: "all" when nothing is
+// excluded (the common, unfiltered case), "none" when nothing is
+// selected, otherwise the selected labels joined by ", ".
+func filterSetLabel(s FilterSet) string {
+	if s.isAll() {
+		return "all"
+	}
+	var labels []string
+	for _, f := range allFilters {
+		if s[f] {
+			labels = append(labels, filterLabel(f))
 		}
 	}
-	return 0
+	if len(labels) == 0 {
+		return "none"
+	}
+	return strings.Join(labels, ", ")
 }
 
 // visibleChildren returns m.cursorDir's children that pass the active
-// filter (SPEC.md §4.7) — every child when the filter is FilterAll.
+// filter set (SPEC.md §4.7) — every child when the set is "all".
 func (m Model) visibleChildren() []*tree.Node {
 	return filterChildren(m.cursorDir.Children, m.filter)
 }
 
-func filterChildren(children []*tree.Node, filter FilterStatus) []*tree.Node {
-	if filter == FilterAll {
+func filterChildren(children []*tree.Node, filter FilterSet) []*tree.Node {
+	if filter.isAll() {
 		return children
 	}
 	out := make([]*tree.Node, 0, len(children))
@@ -64,22 +115,31 @@ func filterChildren(children []*tree.Node, filter FilterStatus) []*tree.Node {
 }
 
 // matchesFilter reports whether n itself (not any descendant) satisfies
-// filter. For a directory, Presence is its own — independent of
-// rollup — while Result is the §3.3 rollup, so a directory matches
-// Equal/Different exactly when its rolled-up status already resolves that
-// way (e.g. an entirely clean subtree matches Equal directly).
-func matchesFilter(n *tree.Node, filter FilterStatus) bool {
-	switch filter {
-	case FilterLeftOnly:
-		return n.Presence == diffmodel.LeftOnly
-	case FilterRightOnly:
-		return n.Presence == diffmodel.RightOnly
-	case FilterEqual:
-		return n.Presence == diffmodel.Both && n.Result == diffmodel.Same
-	case FilterDifferent:
-		return n.Presence == diffmodel.Both && (n.Result == diffmodel.Differs || n.Result == diffmodel.CompareError)
+// any status in filter. Left-only/Right-only match a row's own
+// Presence — this applies to directories too, independent of anything
+// below them. Equal/Different only ever match a non-directory row (a
+// file or symlink) directly, on its own Result: a directory's Result is
+// the §3.3 rollup of what's below it, not a property of the directory
+// itself, so it never satisfies Equal/Different directly — it can only
+// surface via hasMatchingDescendant, same as any other filter it doesn't
+// itself match.
+func matchesFilter(n *tree.Node, filter FilterSet) bool {
+	switch n.Presence {
+	case diffmodel.LeftOnly:
+		return filter[FilterLeftOnly]
+	case diffmodel.RightOnly:
+		return filter[FilterRightOnly]
+	}
+	if n.IsDir() {
+		return false
+	}
+	switch n.Result {
+	case diffmodel.Same:
+		return filter[FilterEqual]
+	case diffmodel.Differs, diffmodel.CompareError:
+		return filter[FilterDifferent]
 	default:
-		return true
+		return false
 	}
 }
 
@@ -88,7 +148,7 @@ func matchesFilter(n *tree.Node, filter FilterStatus) bool {
 // what's been listed so far — a directory not yet listed has no Children —
 // which is why the filtered view re-evaluates live as background listing
 // and comparison results stream in.
-func hasMatchingDescendant(n *tree.Node, filter FilterStatus) bool {
+func hasMatchingDescendant(n *tree.Node, filter FilterSet) bool {
 	for _, c := range n.Children {
 		if matchesFilter(c, filter) || hasMatchingDescendant(c, filter) {
 			return true

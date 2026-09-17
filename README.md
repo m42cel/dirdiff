@@ -20,6 +20,22 @@ See [SPEC.md](SPEC.md) for the full design and rationale.
 - Go 1.27 or newer (see `go.mod`)
 - macOS or Linux (not tested on Windows)
 
+## Installing a prebuilt binary
+
+Tagged releases publish a `dirdiff_<os>_<arch>.tar.gz` archive for each
+of linux/amd64, linux/arm64, darwin/amd64, and darwin/arm64 on the
+[Releases page](https://github.com/m42cel/dirdiff/releases). Each
+archive contains a single `dirdiff` binary:
+
+```sh
+tar -xzf dirdiff_linux_amd64.tar.gz
+sudo mv dirdiff /usr/local/bin/
+```
+
+The `dev` release there is an unstable development build rebuilt on
+every push to master — use a tagged `vX.Y.Z` release instead if you
+want something stable to depend on.
+
 ## Building
 
 From the repository root:

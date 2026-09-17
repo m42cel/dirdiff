@@ -179,25 +179,32 @@ func (q *Queue[T]) Pop() (payload T, key string, ok bool) {
 	return it.payload, it.key, true
 }
 
-// PopUnless is Pop, except it also stops waiting and returns ok=false if
-// stop reports true. stop is (re-)checked immediately before every wait,
-// so a Wake() call — which by itself only re-evaluates already-blocked
-// waiters, the same as a job arriving would — lets a caller tracking some
-// externally-owned condition (e.g. a resizable worker pool's shrunk
-// target) notice it promptly instead of only the next time Pop would
-// otherwise hand back a job. stop is invoked while the queue's own lock
-// is held, so it must not call back into this Queue.
+// PopUnless is Pop, except it also stops and returns ok=false if stop
+// reports true. stop is (re-)checked before every pop attempt — whether or
+// not a job is already queued — so a shrunk pool target takes effect right
+// away instead of only once the queue drains empty: an excess worker exits
+// on its very next PopUnless call rather than working through the entire
+// backlog first. It's also rechecked before every wait, so a Wake() call —
+// which by itself only re-evaluates already-blocked waiters, the same as a
+// job arriving would — lets a caller tracking some externally-owned
+// condition (e.g. a resizable worker pool's shrunk target) notice it
+// promptly instead of only the next time Pop would otherwise hand back a
+// job. stop is invoked while the queue's own lock is held, so it must not
+// call back into this Queue.
 func (q *Queue[T]) PopUnless(stop func() bool) (payload T, key string, ok bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for len(q.heap.items) == 0 && !q.closed {
+	for {
 		if stop() {
 			return payload, "", false
 		}
+		if len(q.heap.items) > 0 {
+			break
+		}
+		if q.closed {
+			return payload, "", false
+		}
 		q.cond.Wait()
-	}
-	if len(q.heap.items) == 0 {
-		return payload, "", false
 	}
 	it := heap.Pop(&q.heap).(*item[T])
 	delete(q.byKey, it.key)

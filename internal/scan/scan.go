@@ -6,7 +6,6 @@
 package scan
 
 import (
-	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/m42cel/dirdiff/internal/diffmodel"
 )
 
@@ -162,6 +162,11 @@ func DoCompare(job CompareJob) CompareOutcome {
 		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: result, Stat: stat}
 
 	case diffmodel.Checksum:
+		// Sizes already differ, so content can't match — skip opening
+		// either file.
+		if leftInfo.Size() != rightInfo.Size() {
+			return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: diffmodel.Differs, Stat: stat}
+		}
 		equal, err := filesEqual(job.LeftAbs, job.RightAbs)
 		if err != nil {
 			return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: diffmodel.CompareError, Err: err, Stat: stat}
@@ -195,13 +200,19 @@ func compareSymlink(job CompareJob) CompareOutcome {
 	return CompareOutcome{RelPath: job.RelPath, Level: diffmodel.Checksum, Result: result}
 }
 
-// filesEqual does a streaming, chunked byte-for-byte comparison, short
-// circuiting as soon as a differing chunk is found (SPEC.md §2.1). Each
-// chunk pair is read concurrently, not sequentially — on two different
+// filesEqual reports whether leftPath and rightPath have identical
+// content, by hashing each file's full stream with xxHash64 and comparing
+// digests. The two hashes are computed concurrently — on two different
 // physical devices (or even just two distant regions of the same one)
-// this bounds a chunk's read latency by the slower side alone rather
-// than the sum of both, the same reasoning as DoList's concurrent
-// left/right reads.
+// this bounds the read latency by the slower side alone rather than the
+// sum of both, the same reasoning as DoList's concurrent left/right
+// reads. xxHash64 is non-cryptographic, chosen for raw hashing speed
+// rather than collision resistance — an accepted trade-off for a diff
+// tool, not an oversight. Unlike a short-circuited byte compare, hashing
+// always reads both files to EOF: a hash can't be known to differ before
+// the last byte is seen, so an early content mismatch no longer avoids
+// the rest of the read (callers filter out same-size-only candidates via
+// DoCompare's size precheck, which is the cheap win that remains).
 func filesEqual(leftPath, rightPath string) (bool, error) {
 	lf, err := os.Open(leftPath)
 	if err != nil {
@@ -214,42 +225,33 @@ func filesEqual(leftPath, rightPath string) (bool, error) {
 	}
 	defer rf.Close()
 
-	const chunkSize = 64 * 1024
-	lb := make([]byte, chunkSize)
-	rb := make([]byte, chunkSize)
+	var rSum uint64
+	var rErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rSum, rErr = hashFile(rf)
+	}()
 
-	for {
-		var rn int
-		var rerr error
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			rn, rerr = io.ReadFull(rf, rb)
-		}()
+	lSum, lErr := hashFile(lf)
+	wg.Wait()
 
-		ln, lerr := io.ReadFull(lf, lb)
-		wg.Wait()
-
-		if ln != rn || !bytes.Equal(lb[:ln], rb[:rn]) {
-			return false, nil
-		}
-
-		lDone := lerr == io.EOF || lerr == io.ErrUnexpectedEOF
-		rDone := rerr == io.EOF || rerr == io.ErrUnexpectedEOF
-		if lerr != nil && !lDone {
-			return false, lerr
-		}
-		if rerr != nil && !rDone {
-			return false, rerr
-		}
-		if lDone != rDone {
-			return false, nil
-		}
-		if lDone {
-			return true, nil
-		}
+	if lErr != nil {
+		return false, lErr
 	}
+	if rErr != nil {
+		return false, rErr
+	}
+	return lSum == rSum, nil
+}
+
+func hashFile(f *os.File) (uint64, error) {
+	h := xxhash.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return 0, err
+	}
+	return h.Sum64(), nil
 }
 
 // AbsPath joins root and relPath (relPath may be "" for the root itself).

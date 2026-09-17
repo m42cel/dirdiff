@@ -263,7 +263,7 @@ idle.
 |---|---|---|
 | *(baseline, automatic)* Existence | Entry present on both sides, by name+type | Free — a byproduct of directory listing, not a triggered action |
 | Metadata | File size **and** modification time equal (one `stat()`/`lstat()` per file; both fields must match) | Cheap, one syscall per file |
-| Content | Streaming byte-for-byte comparison, reading both files in parallel chunks and short-circuiting on first difference (not a hash/checksum — a direct read of both sides) | Expensive — full (or partial, on early mismatch) file read of both sides |
+| Content | A size precheck first (sizes already differ ⇒ `Differs`, no file opened); otherwise a non-cryptographic streaming hash (xxHash64) of each file's full contents, both sides read in parallel | Expensive when sizes match — a full read of both sides to EOF, since a hash can't be known to differ before the last byte; free (stat-only) when sizes already differ |
 
 Size and mtime are a single combined level ("metadata"), not two separate
 ones — a file only counts as "same" at this level if both match.

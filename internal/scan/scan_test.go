@@ -199,16 +199,16 @@ func TestDoCompareChecksum(t *testing.T) {
 	}
 }
 
-func TestDoCompareChecksumAcrossChunkBoundary(t *testing.T) {
+func TestDoCompareChecksumDetectsDifferenceInLargeFile(t *testing.T) {
 	left := t.TempDir()
 	right := t.TempDir()
 
-	big := make([]byte, 200*1024) // > one 64KB chunk
+	big := make([]byte, 200*1024) // large enough to exercise real streaming I/O, not just the size precheck
 	for i := range big {
 		big[i] = byte(i % 251)
 	}
 	bigDiff := append([]byte(nil), big...)
-	bigDiff[150*1024] ^= 0xFF // differ in a later chunk only
+	bigDiff[150*1024] ^= 0xFF // differs well past the start of the file
 
 	if err := os.WriteFile(filepath.Join(left, "big"), big, 0o644); err != nil {
 		t.Fatal(err)
@@ -223,6 +223,33 @@ func TestDoCompareChecksumAcrossChunkBoundary(t *testing.T) {
 	})
 	if out.Result != diffmodel.Differs {
 		t.Fatalf("Result = %v; want Differs", out.Result)
+	}
+}
+
+func TestDoCompareChecksumSkipsContentOnSizeMismatch(t *testing.T) {
+	left := t.TempDir()
+	right := t.TempDir()
+	mustWrite(t, filepath.Join(left, "f"), "short")
+	mustWrite(t, filepath.Join(right, "f"), "much longer content")
+
+	// Make the right file unreadable: if DoCompare tried to open it despite
+	// the size mismatch, that would surface as a CompareError here instead
+	// of the expected Differs, proving the precheck skips content I/O.
+	rightPath := filepath.Join(right, "f")
+	if err := os.Chmod(rightPath, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(rightPath, 0o644) })
+
+	out := DoCompare(CompareJob{
+		LeftAbs: filepath.Join(left, "f"), RightAbs: rightPath,
+		Type: diffmodel.File, Level: diffmodel.Checksum,
+	})
+	if out.Result != diffmodel.Differs {
+		t.Fatalf("Result = %v; want Differs (size precheck should short-circuit before opening either file)", out.Result)
+	}
+	if out.Err != nil {
+		t.Fatalf("Err = %v; want nil (content should never be read when sizes already differ)", out.Err)
 	}
 }
 

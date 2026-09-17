@@ -9,8 +9,8 @@ directories immediately, then scans deeper directories breadth-first in
 the background without blocking the UI. Navigating into a directory
 reprioritizes the background scan toward what you're looking at.
 Comparing file contents is opt-in and explicit — you choose how thorough
-a comparison to run (metadata, i.e. size + mtime, or a full byte-for-byte
-content comparison), and where (just the current directory, or
+a comparison to run (metadata, i.e. size + mtime, or a full content
+comparison via hashing), and where (just the current directory, or
 recursively).
 
 See [SPEC.md](SPEC.md) for the full design and rationale.
@@ -58,7 +58,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | `Home` / `End` | Jump to first / last entry |
 | `→` / `Enter` | Open the directory under the cursor (both panes navigate together) |
 | `←` / `Backspace` | Go up to the parent directory |
-| `l` | Switch the compare level — metadata (size + mtime) ↔ content (byte-for-byte) — remembered until changed again |
+| `l` | Switch the compare level — metadata (size + mtime) ↔ content (hashed) — remembered until changed again |
 | `r` | Toggle recursive mode on/off — remembered, default on |
 | `f` | Open the row-status filter popup — All / Left-only / Right-only / Equal / Different — remembered like `l`/`r` |
 | `w` | Open the worker-count popup — resize the scan/compare pools live |

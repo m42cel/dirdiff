@@ -60,14 +60,17 @@ type Model struct {
 	compareLevel diffmodel.CompareLevel
 	recursive    bool
 
-	// filter is the persistent row-status filter (SPEC.md §4.7), changed
-	// via the 'f' popup the same way 'l'/'r' change their own settings.
-	// showFilterMenu/filterCursor are the popup's own open/selection state,
-	// separate from filter itself so cancelling with Esc leaves filter
-	// untouched.
-	filter         FilterStatus
+	// filter is the persistent, multi-select row-status filter (SPEC.md
+	// §4.7), changed via the 'f' popup the same way 'l'/'r' change their
+	// own settings. showFilterMenu/filterCursor/filterEditing are the
+	// popup's own open/highlight/in-progress-selection state, separate
+	// from filter itself so cancelling with Esc leaves filter untouched —
+	// filterEditing starts as a copy of filter when the popup opens and
+	// is only copied back into filter on a confirming Enter.
+	filter         FilterSet
 	showFilterMenu bool
 	filterCursor   int
+	filterEditing  FilterSet
 
 	// showWorkersMenu/workersCursor mirror showFilterMenu/filterCursor for
 	// the 'w' popup (SPEC.md §4.8), which edits session's own live worker
@@ -92,6 +95,7 @@ func New(sess *session.Session) Model {
 		cursorDir:    sess.Tree,
 		compareLevel: diffmodel.SizeMtime,
 		recursive:    true,
+		filter:       defaultFilterSet(),
 	}
 }
 
@@ -198,10 +202,19 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 			if m.filterCursor < len(allFilters)-1 {
 				m.filterCursor++
 			}
+		case " ":
+			f := allFilters[m.filterCursor]
+			m.filterEditing[f] = !m.filterEditing[f]
 		case "enter":
-			m.filter = allFilters[m.filterCursor]
-			m.showFilterMenu = false
-			m.clampCursor()
+			// Committing an empty set would hide every row with no way
+			// back in from the popup itself, so Enter is a no-op until
+			// at least one status is selected — the popup just stays
+			// open.
+			if !m.filterEditing.isEmpty() {
+				m.filter = m.filterEditing
+				m.showFilterMenu = false
+				m.clampCursor()
+			}
 		case "f", "esc":
 			m.showFilterMenu = false
 		}
@@ -290,7 +303,8 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.recursive = !m.recursive
 	case "f":
 		m.showFilterMenu = true
-		m.filterCursor = filterIndex(m.filter)
+		m.filterCursor = 0
+		m.filterEditing = cloneFilterSet(m.filter)
 	case "w":
 		m.showWorkersMenu = true
 		m.workersCursor = 0

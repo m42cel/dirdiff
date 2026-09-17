@@ -19,7 +19,7 @@ func (m Model) View() string {
 		return helpView()
 	}
 	if m.showFilterMenu {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, filterMenuView(m.filterCursor))
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, filterMenuView(m.filterCursor, m.filterEditing))
 	}
 	if m.showWorkersMenu {
 		content := workersMenuView(m)
@@ -117,7 +117,7 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 		}
 		for i := m.scrollOffset; i < end; i++ {
 			c := children[i]
-			dim := m.filter != FilterAll && !matchesFilter(c, m.filter)
+			dim := !m.filter.isAll() && !matchesFilter(c, m.filter)
 			l, g, r := renderRowTriple(c, m.sess, m.spinnerFrame, i == m.cursorIdx, dim, leftWidth, rightWidth)
 			left = append(left, l)
 			gutter = append(gutter, g)
@@ -407,7 +407,7 @@ func (m Model) renderStatusBar() string {
 		recursiveLabel = "on"
 	}
 	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s | scan workers: %d | compare workers: %d]",
-		compareLevelLabel(m.compareLevel), recursiveLabel, filterLabel(m.filter), m.sess.ListWorkers(), m.sess.CompareWorkers())
+		compareLevelLabel(m.compareLevel), recursiveLabel, filterSetLabel(m.filter), m.sess.ListWorkers(), m.sess.CompareWorkers())
 	hint := "↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare · n/N diff · x cancel · ? help · q quit"
 
 	return statusBarStyle.Render(stats) + "\n" + pendingStyle.Render(settings) + "\n" + dimStyle.Render(hint)
@@ -424,7 +424,7 @@ func helpView() string {
 		"← / Backspace  up to parent directory",
 		"l              switch compare level — metadata (size + date) ↔ content (byte-for-byte) (remembered)",
 		"r              toggle recursive on/off (remembered, default on)",
-		"f              open row-status filter popup: All / Left-only / Right-only / Equal / Different (remembered)",
+		"f              open row-status filter popup: multi-select Left-only / Right-only / Equal / Different — space toggles, enter confirms (remembered)",
 		"w              open worker-count popup: scan / compare pool size, Enter to type a new value",
 		"c              compare current directory's entries at the current level/recursive setting",
 		"n / N          jump to next / previous difference",
@@ -444,18 +444,24 @@ func helpView() string {
 }
 
 // filterMenuView renders the 'f' popup (SPEC.md §4.7): a small box listing
-// every FilterStatus option, with cursor (the currently highlighted
-// option, not necessarily the active filter) marked by cursorStyle.
-func filterMenuView(cursor int) string {
+// every FilterStatus option as a checkbox reflecting editing's in-progress
+// selection, with cursor (the currently highlighted row) marked by
+// cursorStyle — highlight and selection are independent, so a highlighted
+// row isn't necessarily checked and vice versa.
+func filterMenuView(cursor int, editing FilterSet) string {
 	lines := []string{titleStyle.Render("Filter rows"), ""}
 	for i, f := range allFilters {
-		line := "  " + filterLabel(f)
+		box := "[ ]"
+		if editing[f] {
+			box = "[x]"
+		}
+		line := "  " + box + " " + filterLabel(f)
 		if i == cursor {
-			line = cursorStyle.Render("> " + filterLabel(f))
+			line = cursorStyle.Render("> " + box + " " + filterLabel(f))
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "", dimStyle.Render("↑/↓ select · Enter apply · Esc cancel"))
+	lines = append(lines, "", dimStyle.Render("↑/↓ select · Space toggle · Enter confirm · Esc cancel"))
 	return popupStyle.Render(strings.Join(lines, "\n"))
 }
 

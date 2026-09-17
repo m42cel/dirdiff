@@ -194,30 +194,46 @@ v1.
 
 ### 4.7 Row status filter
 
-Pressing `f` opens a popup for choosing a single row-status filter, applied
-to both panes at once: **All** (default, off), **Left-only**, **Right-only**,
-**Equal**, **Different**. `↑`/`↓` move the selection, `Enter` applies it and
-closes the popup, `Esc` closes without changing the current filter.
+Pressing `f` opens a popup for choosing a **multi-select** row-status
+filter, applied to both panes at once, over four statuses: **Left-only**,
+**Right-only**, **Equal**, **Different**. `↑`/`↓` move the highlighted
+row, `Space` toggles that row's membership in the selection, `Enter`
+confirms the selection and closes the popup, `Esc` closes without
+changing the current filter (discarding any toggles made since the popup
+was opened). `Enter` is a no-op while the in-progress selection is empty
+— the popup stays open, since committing an empty set would hide every
+row with no way back in from the popup itself. There's no separate "All"
+option: selecting all four statuses (the default) is the unfiltered,
+show-everything state.
 
 The filter is a third persistent setting alongside compare level (`l`) and
 recursive (`r`, §5.2): it's remembered across directory navigation until
-changed again, and resets to All on the next launch (no persisted config,
-§10).
+changed again, and resets to all-selected on the next launch (no
+persisted config, §10).
 
-When a filter other than All is active, a row is visible in the current
-directory's listing if either:
+When the selection isn't all four statuses, a row is visible in the
+current directory's listing if either:
 
 - **It matches directly.** Left-only/Right-only match a row's own
   `Presence` — this applies to directories too, independent of anything
-  below them. Equal/Different match a row's own comparison result: `Same`
-  for Equal, `Differs`/`error` for Different. A directory's own result is
-  its rolled-up status (§3.3), so a directory that's entirely clean (or
-  entirely, demonstrably differing) matches Equal/Different directly, the
-  same as a file would. A row whose result is still `unknown` never
-  matches Equal or Different.
-- **It has a matching descendant**, at any depth. Such a directory is
-  still shown — dimmed, to distinguish it from a direct match — purely so
-  you can navigate down to what matched inside it.
+  below them: a directory genuinely present on only one side matches
+  Left-only/Right-only directly, the same as a file would. Equal/Different
+  only ever match a **file or symlink's** own comparison result: `Same`
+  for Equal, `Differs`/`error` for Different. A directory never matches
+  Equal or Different directly, even when its own rolled-up status (§3.3)
+  would resolve that way — a directory's rollup mixes together whatever
+  its descendants' presence and comparison statuses happen to be, so
+  treating it as a direct match let a directory rolled up to `Differs`
+  purely by a left-only/right-only child show under the Different filter
+  while looking empty once you navigated into it (that child only
+  matches Left-only/Right-only, not Different). A directory only ever
+  surfaces for Equal/Different through a matching descendant, below. A
+  row whose result is still `unknown` never matches Equal or Different.
+- **It has a descendant matching any selected status**, at any depth —
+  the four statuses combine as OR, since they're mutually exclusive per
+  row. Such a directory is still shown — dimmed, to distinguish it from a
+  direct match — purely so you can navigate down to what matched inside
+  it.
 
 A directory with neither a direct match nor a matching descendant is
 hidden completely, along with everything under it — there's nothing to
@@ -442,7 +458,7 @@ plus the full reference via `?` (§4.5).
 | `←` / `Backspace` | Navigate to parent directory (both panes ascend together) |
 | `l` | Switch the persistent compare-level setting: metadata (size+date) ↔ content (byte-for-byte) (remembered until changed again) |
 | `r` | Toggle the persistent recursive setting on/off (remembered; default on) |
-| `f` | Open the row-status filter popup: All / Left-only / Right-only / Equal / Different (§4.7; remembered like `l`/`r`) |
+| `f` | Open the row-status filter popup: multi-select Left-only / Right-only / Equal / Different (§4.7; remembered like `l`/`r`) |
 | `w` | Open the worker-count popup: resize the scan/compare pools live (§4.8) |
 | `c` | Compare current directory's visible entries at the current level/recursive setting |
 | `n` / `N` | Jump to next / previous entry in the current directory whose status isn't "same" (only considers entries already compared at some level) |

@@ -60,7 +60,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | `←` / `Backspace` | Go up to the parent directory |
 | `l` | Switch the compare level — metadata (size + mtime) ↔ content (byte-for-byte) — remembered until changed again |
 | `r` | Toggle recursive mode on/off — remembered, default on |
-| `f` | Open the row-status filter popup — All / Left-only / Right-only / Equal / Different — remembered like `l`/`r` |
+| `f` | Open the row-status filter popup — multi-select Left-only / Right-only / Equal / Different, space to toggle, enter to confirm — remembered like `l`/`r` |
 | `w` | Open the worker-count popup — resize the scan/compare pools live |
 | `c` | Compare the current directory's files at the current level/recursive setting |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
@@ -74,10 +74,15 @@ directory is listed; metadata/content comparisons only run once you
 trigger them with `c`.
 
 The row-status filter (`f`) hides everything in the current listing that
-doesn't match the chosen status, except that a directory containing a
-match anywhere below it stays visible — dimmed — so you can still
-navigate down to it. A directory with no match at all, direct or nested,
-is hidden entirely.
+doesn't match one of the selected statuses, except that a directory
+containing a match anywhere below it stays visible — dimmed — so you can
+still navigate down to it. A directory with no match at all, direct or
+nested, is hidden entirely. Selecting all four statuses (the default) is
+the same as no filtering. Equal/Different only ever match a file or
+symlink's own result directly — never a directory's own rolled-up
+status — so a directory only shows under Equal/Different through a
+matching descendant; Left-only/Right-only still match a directory
+directly when it's genuinely one-sided.
 
 The worker-count popup (`w`) lets you resize either pool while dirdiff is
 running, on top of the `--scan-workers`/`--compare-workers` starting

@@ -83,7 +83,12 @@ type Model struct {
 	editingWorkers  bool
 	workersInput    string
 
-	spinnerFrame int
+	// spinnerRunning tracks whether a tick is currently scheduled, so the
+	// animation clock can stop once no work is outstanding and start
+	// again when some is, without ever ending up with two overlapping
+	// tick chains driving the frame counter at twice the rate.
+	spinnerFrame   int
+	spinnerRunning bool
 
 	width, height int
 }
@@ -96,6 +101,10 @@ func New(sess *session.Session) Model {
 		compareLevel: diffmodel.SizeMtime,
 		recursive:    true,
 		filter:       defaultFilterSet(),
+		// Init unconditionally schedules the first tick, and session.New
+		// has already enqueued the root listing by now, so the clock
+		// starts running with work outstanding.
+		spinnerRunning: true,
 	}
 }
 
@@ -141,21 +150,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case listResultMsg:
 		m.sess.OnListResult(msg.r)
 		m.clampCursor()
-		return m, waitListResult(m.sess.ListResults())
+		// Applying a listing is itself a source of new work (the
+		// children it just discovered), so the clock is restarted after
+		// it, not before.
+		return m, tea.Batch(waitListResult(m.sess.ListResults()), m.resumeSpinner())
 
 	case compareResultMsg:
 		m.sess.OnCompareResult(msg.r)
 		m.clampCursor()
-		return m, waitCompareResult(m.sess.CompareResults())
+		return m, tea.Batch(waitCompareResult(m.sess.CompareResults()), m.resumeSpinner())
 
 	case spinnerTickMsg:
 		m.spinnerFrame++
+		// Nothing outstanding means no glyph can be animating, and a
+		// frame identical to the last one is thrown away by the renderer
+		// anyway — so stop the clock rather than rebuild that frame
+		// forever.
+		if m.spinnerRunning = m.sess.HasPendingWork(); !m.spinnerRunning {
+			return m, nil
+		}
 		return m, tickSpinner()
 
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		tm, cmd := m.handleKey(msg)
+		m = tm.(Model)
+		if cmd != nil {
+			return m, cmd // quit — nothing to keep animating for
+		}
+		// A keypress can enqueue work ('c', or navigation that triggers
+		// a listing), which has to restart a clock that stopped while
+		// the tree was idle.
+		return m, m.resumeSpinner()
 	}
 	return m, nil
+}
+
+// resumeSpinner restarts the animation clock if work is outstanding and
+// it isn't already running, returning the tick command to schedule (nil
+// when there's nothing to animate or a tick is already in flight).
+func (m *Model) resumeSpinner() tea.Cmd {
+	if m.spinnerRunning || !m.sess.HasPendingWork() {
+		return nil
+	}
+	m.spinnerRunning = true
+	return tickSpinner()
 }
 
 // handleKey dispatches a key event. A terminal read can legitimately

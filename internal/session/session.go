@@ -391,6 +391,21 @@ func (s *Session) Stats() QueueStats {
 	}
 }
 
+// HasPendingWork reports whether either pool still has a job queued or
+// in flight anywhere. It's the UI's cue that something on screen can
+// still change on its own: with both pools empty, no row can be showing
+// a pending glyph, since the per-node pending counters those glyphs read
+// are only non-zero while a job for that subtree is outstanding.
+//
+// A result that has already been handed to the result channel but not
+// yet applied counts as no work: the message carrying it will render on
+// arrival anyway, and applying it is what clears the last pending
+// counter.
+func (s *Session) HasPendingWork() bool {
+	st := s.Stats()
+	return st.ListPending+st.ListActive+st.CmpPending+st.CmpActive > 0
+}
+
 // IsListPending reports whether relPath's directory listing is queued
 // or in-flight.
 func (s *Session) IsListPending(relPath string) bool { return s.listQ.IsPending(relPath) }

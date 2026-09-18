@@ -56,6 +56,57 @@ const (
 	CompareError
 )
 
+// RowStatus is the single status a row is filtered by (SPEC.md §4.7):
+// which side it exists on, or — for a matched file or symlink — how its
+// two sides compared. It's derived from a row's type/presence/result
+// rather than stored, so there is exactly one definition of what "equal"
+// or "different" means for a row, shared by the UI's filter and by the
+// per-subtree tallies package tree keeps.
+type RowStatus int
+
+const (
+	RowLeftOnly RowStatus = iota
+	RowRightOnly
+	RowEqual
+	RowDifferent
+
+	// RowStatusCount is the number of real statuses, for sizing arrays
+	// indexed by a RowStatus.
+	RowStatusCount
+
+	// RowNone is not one of those: it's what a row with no status at all
+	// classifies as — a matched entry not yet compared, or a directory,
+	// whose Result is a rollup of its subtree rather than a statement
+	// about the directory itself.
+	RowNone RowStatus = -1
+)
+
+// ClassifyRow reports which status a row has. A one-sided entry is
+// classified by presence alone, whatever its type — a directory present
+// on only one side is a Left-only/Right-only row just as a file would
+// be. Equal/Different, by contrast, only ever apply to a file or
+// symlink: a directory's CompareResult is the SPEC.md §3.3 rollup of
+// everything beneath it, not a property of the directory, so a directory
+// never classifies as Equal or Different.
+func ClassifyRow(t EntryType, p Presence, r CompareResult) RowStatus {
+	switch p {
+	case LeftOnly:
+		return RowLeftOnly
+	case RightOnly:
+		return RowRightOnly
+	}
+	if t == Dir {
+		return RowNone
+	}
+	switch r {
+	case Same:
+		return RowEqual
+	case Differs, CompareError:
+		return RowDifferent
+	}
+	return RowNone
+}
+
 // ListedChild describes one merged entry discovered while listing a
 // directory on both sides: a name matched (or unmatched) by (name, type)
 // per SPEC.md §3.1.

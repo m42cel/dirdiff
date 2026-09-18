@@ -42,7 +42,10 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   `EntryType` (File/Dir/Symlink — matched independently per spec §3.1, so
   a file and a directory with the same name never merge into one row),
   `Presence`, `CompareLevel`/`CompareResult` (ordered shallowest-to-deepest
-  so callers compare levels with plain `<`), `ListedChild`, `StatInfo`.
+  so callers compare levels with plain `<`), `ListedChild`, `StatInfo`,
+  and `RowStatus`/`ClassifyRow` — the single definition of which status a
+  row has for filtering (spec §4.7), used both by the UI's filter and by
+  the per-subtree tallies in `tree`, so the two can't drift apart.
 - **`internal/workqueue`** — generic, key-deduplicated priority queue
   (`Queue[T]`) backing both worker pools. Pop order is driven by
   tree-edge distance from a live focus path rather than fixed tiers
@@ -65,6 +68,14 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   already known (spec §5.3 monotonicity), though stat metadata is always
   refreshed. **Nodes are mutated exclusively from the UI's Update loop**
   (a single goroutine) — nothing in this package takes a lock.
+  Each node also carries `descMatches`, a per-`RowStatus` tally of its
+  descendants that answers the filter's "is there a matching row below?"
+  in O(1) instead of a subtree walk per render; `AddChild` is therefore
+  the only supported way to link a node into the tree (assigning
+  `Children` directly leaves the tallies stale), and `ApplyCompareResult`
+  is the only thing that moves a node between statuses afterwards. The
+  recursive walk lives on as the oracle in `descendants_test.go` — any
+  new mutator must keep the two in agreement.
 - **`internal/session`** — orchestrates the two worker pools and decides
   what to enqueue and when (`Navigate` calls `SetFocus` on both queues
   for reprioritization, `TriggerCompare`/`armRecursive` for opt-in
@@ -87,6 +98,10 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   rely on color alone for a new status. The compare level (`l`) and
   recursive toggle (`r`) are persistent settings, not one-shot flags —
   `c` runs whatever is currently selected and doesn't reset either one.
+  `View()` runs once per Bubble Tea message — every scan/compare result
+  and every spinner tick — so anything it does per row is on a very hot
+  path: keep it O(visible rows), never O(subtree). That's why the row
+  filter reads `tree`'s tallies instead of searching the subtree itself.
 - **`cmd/dirdiff`** — flag parsing (`--level`, `--workers`), startup path
   validation (hard error to stderr, exit 1, before the TUI starts — spec
   §2.2), wires up `session.New` + `ui.New` + `tea.Program`.

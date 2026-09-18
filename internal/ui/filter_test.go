@@ -19,10 +19,15 @@ func file(name string, presence diffmodel.Presence, result diffmodel.CompareResu
 	return &tree.Node{Name: name, Type: diffmodel.File, Presence: presence, Result: result}
 }
 
+// dir links its children with tree.AddChild rather than assigning
+// Children directly, since that's what keeps the per-status descendant
+// tallies hasMatchingDescendant reads in sync — a hand-linked subtree
+// would report as empty. Children must already carry their final
+// status, as they do here (nothing re-compares them afterwards).
 func dir(name string, presence diffmodel.Presence, result diffmodel.CompareResult, children ...*tree.Node) *tree.Node {
-	d := &tree.Node{Name: name, Type: diffmodel.Dir, Presence: presence, Result: result, Children: children}
+	d := &tree.Node{Name: name, Type: diffmodel.Dir, Presence: presence, Result: result}
 	for _, c := range children {
-		c.Parent = d
+		tree.AddChild(d, c)
 	}
 	return d
 }

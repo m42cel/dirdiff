@@ -67,6 +67,21 @@ type Node struct {
 	PendingListingLeft  int
 	PendingListingRight int
 	PendingCompare      int
+
+	// descMatches counts, per diffmodel.RowStatus, how many of this
+	// node's descendants (not counting itself) currently have that
+	// status. It answers the row filter's "is there a matching row
+	// somewhere below?" question (SPEC.md §4.7) in O(1), which matters
+	// because the UI asks it for every visible row on every render — a
+	// subtree walk there costs a full traversal of the tree several
+	// times a second, forever, even on an idle fully-scanned tree.
+	//
+	// AddChild and ApplyCompareResult are what keep it correct: the
+	// first is the only supported way to link a node into the tree, the
+	// second the only thing that can change a node's status once linked
+	// (Presence is fixed at creation, and a directory's status never
+	// depends on its rollup).
+	descMatches [diffmodel.RowStatusCount]int32
 }
 
 // NewRoot creates the root node of the tree, representing "" (the
@@ -77,6 +92,82 @@ func NewRoot() *Node {
 }
 
 func (n *Node) IsDir() bool { return n.Type == diffmodel.Dir }
+
+// RowStatus is n's own status for filtering purposes (SPEC.md §4.7),
+// independent of anything below it — diffmodel.RowNone for a row that
+// currently has no status at all.
+func (n *Node) RowStatus() diffmodel.RowStatus {
+	return diffmodel.ClassifyRow(n.Type, n.Presence, n.Result)
+}
+
+// DescendantsWithStatus reports how many of n's descendants, at any
+// depth, currently have status s. n itself is never counted, so a
+// caller asking "should this row be shown under the filter?" tests the
+// row's own RowStatus and this separately — which is what keeps a
+// directory shown only because of what's beneath it distinguishable
+// (and dimmable) from one that matches in its own right.
+func (n *Node) DescendantsWithStatus(s diffmodel.RowStatus) int {
+	if s < 0 || s >= diffmodel.RowStatusCount {
+		return 0
+	}
+	return int(n.descMatches[s])
+}
+
+// statusDelta is a change to a subtree's per-status tallies, applied to
+// a node and all its ancestors by adjustDescendantsUpward.
+type statusDelta [diffmodel.RowStatusCount]int32
+
+func (d *statusDelta) add(other statusDelta) {
+	for s, v := range other {
+		d[s] += v
+	}
+}
+
+func (d statusDelta) isZero() bool { return d == statusDelta{} }
+
+// adjustDescendantsUpward applies delta to n and every ancestor of n.
+// Cost is the depth of the tree, not the size of the subtree — the same
+// upward walk AdjustPendingCompare and recomputeResultUpward already do
+// for every result that arrives.
+func adjustDescendantsUpward(n *Node, delta statusDelta) {
+	if delta.isZero() {
+		return
+	}
+	for cur := n; cur != nil; cur = cur.Parent {
+		for s, v := range delta {
+			cur.descMatches[s] += v
+		}
+	}
+}
+
+// AddChild links child — with whatever subtree it already carries —
+// into parent's Children, and folds its statuses into the descendant
+// tallies of parent and every ancestor. Assigning to Children directly
+// leaves those tallies stale, so this is the only supported way to
+// attach a node.
+func AddChild(parent, child *Node) {
+	adjustDescendantsUpward(parent, linkChild(parent, child))
+}
+
+// linkChild is AddChild without the upward walk: it returns the delta
+// the ancestors still need, so a caller attaching many children at once
+// (ApplyListing) can sum them and walk up a single time.
+func linkChild(parent, child *Node) statusDelta {
+	child.Parent = parent
+	parent.Children = append(parent.Children, child)
+	return contribution(child)
+}
+
+// contribution is what child accounts for in its ancestors' tallies:
+// its own status, if it has one, plus everything its subtree already
+// carries.
+func contribution(child *Node) statusDelta {
+	d := statusDelta(child.descMatches)
+	if s := child.RowStatus(); s != diffmodel.RowNone {
+		d[s]++
+	}
+	return d
+}
 
 // ChildRelPath computes the RelPath of a child named name under parent.
 func ChildRelPath(parent *Node, name string) string {
@@ -95,14 +186,30 @@ func ApplyListing(n *Node, children []diffmodel.ListedChild, leftErr, rightErr e
 	n.Listing = false
 	n.ListErrLeft, n.ListErrRight = leftErr, rightErr
 
+	// A listing replaces whatever children were there, so anything they
+	// contributed to the ancestors' tallies comes back out first. Today
+	// a directory is only ever listed once and this subtracts nothing,
+	// but a tally left behind by a discarded subtree would surface as
+	// rows showing under a filter nothing beneath them matches — a
+	// symptom with no obvious route back to here.
+	var delta statusDelta
+	for _, old := range n.Children {
+		var negated statusDelta
+		for s, v := range contribution(old) {
+			negated[s] = -v
+		}
+		delta.add(negated)
+	}
+
 	n.Children = make([]*Node, 0, len(children))
 	for _, c := range children {
-		n.Children = append(n.Children, &Node{
+		delta.add(linkChild(n, &Node{
 			Name: c.Name, Type: c.Type, Presence: c.Presence,
-			RelPath: ChildRelPath(n, c.Name), Parent: n,
-		})
+			RelPath: ChildRelPath(n, c.Name),
+		}))
 	}
 	sortChildren(n.Children)
+	adjustDescendantsUpward(n, delta)
 	recomputeResultUpward(n)
 }
 
@@ -122,10 +229,26 @@ func sortChildren(children []*Node) {
 // when present, since it's informational for the details panel rather
 // than part of the comparison verdict.
 func ApplyCompareResult(n *Node, level diffmodel.CompareLevel, result diffmodel.CompareResult, cmpErr error, stat *diffmodel.StatInfo) {
+	before := n.RowStatus()
 	if level > n.Level {
 		n.Level = level
 		n.Result = result
 		n.Err = cmpErr
+	}
+	// A result is the only thing that can move a row between statuses
+	// once it's in the tree: not-yet-compared to equal or differing, or
+	// equal to differing when a deeper level overrides a shallower
+	// verdict. The ancestors' tallies count descendants only, so the
+	// delta starts at the parent.
+	if after := n.RowStatus(); after != before {
+		var delta statusDelta
+		if before != diffmodel.RowNone {
+			delta[before]--
+		}
+		if after != diffmodel.RowNone {
+			delta[after]++
+		}
+		adjustDescendantsUpward(n.Parent, delta)
 	}
 	if stat != nil {
 		n.HaveStat = true

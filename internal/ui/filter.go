@@ -7,14 +7,19 @@ import (
 	"github.com/m42cel/dirdiff/internal/tree"
 )
 
-// FilterStatus is one row-status filter option (SPEC.md §4.7).
-type FilterStatus int
+// FilterStatus is one row-status filter option (SPEC.md §4.7): the
+// filter's options are exactly diffmodel's row statuses, under the names
+// the popup uses for them. Keeping them the same type is what lets a
+// selection be tested directly against a row's own status and against
+// the per-status descendant tallies tree.Node keeps, with no mapping in
+// between that could drift from either.
+type FilterStatus = diffmodel.RowStatus
 
 const (
-	FilterLeftOnly FilterStatus = iota
-	FilterRightOnly
-	FilterEqual
-	FilterDifferent
+	FilterLeftOnly  = diffmodel.RowLeftOnly
+	FilterRightOnly = diffmodel.RowRightOnly
+	FilterEqual     = diffmodel.RowEqual
+	FilterDifferent = diffmodel.RowDifferent
 )
 
 // allFilters is the popup's fixed option order.
@@ -115,42 +120,29 @@ func filterChildren(children []*tree.Node, filter FilterSet) []*tree.Node {
 }
 
 // matchesFilter reports whether n itself (not any descendant) satisfies
-// any status in filter. Left-only/Right-only match a row's own
-// Presence — this applies to directories too, independent of anything
-// below them. Equal/Different only ever match a non-directory row (a
-// file or symlink) directly, on its own Result: a directory's Result is
-// the §3.3 rollup of what's below it, not a property of the directory
-// itself, so it never satisfies Equal/Different directly — it can only
-// surface via hasMatchingDescendant, same as any other filter it doesn't
-// itself match.
+// any status in filter. Which status a row has is diffmodel's call, not
+// this package's (see diffmodel.ClassifyRow): notably, a directory never
+// has the Equal or Different status, so it can only surface under those
+// filters via hasMatchingDescendant.
 func matchesFilter(n *tree.Node, filter FilterSet) bool {
-	switch n.Presence {
-	case diffmodel.LeftOnly:
-		return filter[FilterLeftOnly]
-	case diffmodel.RightOnly:
-		return filter[FilterRightOnly]
-	}
-	if n.IsDir() {
-		return false
-	}
-	switch n.Result {
-	case diffmodel.Same:
-		return filter[FilterEqual]
-	case diffmodel.Differs, diffmodel.CompareError:
-		return filter[FilterDifferent]
-	default:
-		return false
-	}
+	s := n.RowStatus()
+	return s != diffmodel.RowNone && filter[s]
 }
 
-// hasMatchingDescendant recursively searches n's already-known subtree for
-// a matching row (SPEC.md §4.7's "dimmed ancestor" case). It only sees
-// what's been listed so far — a directory not yet listed has no Children —
-// which is why the filtered view re-evaluates live as background listing
-// and comparison results stream in.
+// hasMatchingDescendant reports whether n's already-known subtree holds
+// a row matching any selected status (SPEC.md §4.7's "dimmed ancestor"
+// case), by reading the tallies tree.Node maintains rather than walking
+// the subtree: this runs for every visible row on every render, so a
+// walk here costs a full traversal of the tree several times a second
+// even when nothing is happening.
+//
+// The tallies only cover what's been listed so far — a directory not yet
+// listed has no children to count — which is why the filtered view
+// re-evaluates live as background listing and comparison results stream
+// in.
 func hasMatchingDescendant(n *tree.Node, filter FilterSet) bool {
-	for _, c := range n.Children {
-		if matchesFilter(c, filter) || hasMatchingDescendant(c, filter) {
+	for _, f := range allFilters {
+		if filter[f] && n.DescendantsWithStatus(f) > 0 {
 			return true
 		}
 	}

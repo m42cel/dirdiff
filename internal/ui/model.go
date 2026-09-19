@@ -53,6 +53,15 @@ type Model struct {
 	scrollOffset int
 	showHelp     bool
 
+	// atRootParent is the one level that isn't a real directory listing
+	// (SPEC.md §4.3.1): standing above both roots, where the only row is
+	// the pair of compared directories themselves, so their whole-tree
+	// totals are readable in the details panel. cursorDir stays the tree
+	// root throughout — this level has no node of its own, since the two
+	// roots' actual parent directories are unrelated to each other and are
+	// never listed or compared.
+	atRootParent bool
+
 	// compareLevel and recursive carry over between 'c' presses until
 	// changed again with 'l' / 'r'. Defaults match the CLI's own default
 	// (metadata, recursive) so the in-app picker starts in the same state
@@ -400,6 +409,15 @@ func (m *Model) triggerCompare() {
 // §10). A directory missing on one side is still navigable as long as it
 // exists on the other (SPEC.md §4.3).
 func (m *Model) enter() {
+	if m.atRootParent {
+		// The only row up there is the root pair itself, so entering it is
+		// simply the way back down into the normal view.
+		m.atRootParent = false
+		m.cursorIdx = 0
+		m.scrollOffset = 0
+		m.sess.Navigate(m.cursorDir)
+		return
+	}
 	visible := m.visibleChildren()
 	if m.cursorIdx >= len(visible) {
 		return
@@ -420,6 +438,13 @@ func (m *Model) enter() {
 func (m *Model) ascend() {
 	parent := m.cursorDir.Parent
 	if parent == nil {
+		// Above the root there's one more level to go up to — the root pair
+		// itself as a single row (SPEC.md §4.3.1) — and nothing above that.
+		if !m.atRootParent {
+			m.atRootParent = true
+			m.cursorIdx = 0
+			m.scrollOffset = 0
+		}
 		return
 	}
 	child := m.cursorDir

@@ -103,6 +103,13 @@ func filterSetLabel(s FilterSet) string {
 // visibleChildren returns m.cursorDir's children that pass the active
 // filter set (SPEC.md §4.7) — every child when the set is "all".
 func (m Model) visibleChildren() []*tree.Node {
+	if m.atRootParent {
+		// The root pair is the only row at that level and the only way
+		// back down into the tree, so the filter never applies to it — the
+		// same reasoning as the one-sided navigation placeholder (SPEC.md
+		// §4.3), which filtering also leaves alone.
+		return []*tree.Node{m.cursorDir}
+	}
 	return filterChildren(m.cursorDir.Children, m.filter)
 }
 

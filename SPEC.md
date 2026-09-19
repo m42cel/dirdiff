@@ -160,6 +160,46 @@ row shows the same "compared by" line, rolled up from its descendants
 progressively as background jobs resolve that data (shows "—" / a pending
 marker for fields not yet fetched).
 
+Sizes are always shown in base-2 units (B, KiB, MiB, GiB, …), the ones
+that match how filesystems actually allocate. A single file's size also
+names its exact byte count, since the metadata level calls two files
+different on an exact size mismatch that rounded units would hide.
+
+**Directory totals.** For a directory row the panel replaces the
+single-entry size/mtime lines with, per side, how much the subtree
+beneath it holds — directory count, file count, symlink count (only when
+there are any) — and the total size of those files. Counts include every
+descendant at any depth, not just direct children, and each side is
+counted separately: an entry existing on only one side counts only there.
+Like the rollup (§3.3), the totals are live and incremental, growing as
+listing discovers entries and comparisons report sizes; they never imply
+the subtree is fully scanned.
+
+A left-only/right-only directory row (§3.2) has nothing at all under it
+on its missing side — not a subtree that happens to total zero — so that
+side's line names it as absent (the same "<does not exist>" wording as
+the one-sided pane placeholder, §4.3) rather than being printed as a
+misleading "0 directories · 0 files · 0 B".
+
+Size, unlike the counts, is never measured for its own sake: it is only
+ever the size metadata a comparison already had to read (§5.1's metadata
+level, which stats both sides anyway). No extra `stat()` call is ever
+issued just to total a directory. Consequently:
+
+- A file not yet compared, and a file existing on one side only (which
+  has nothing to be compared against), contributes no size.
+- A symlink never contributes a size at all — comparing one reads its
+  link target, not a file (§7) — which is why symlinks are counted apart
+  from files rather than folded into the file count.
+- While any file under the directory is unsized, the total is shown as a
+  lower bound, alongside how many of the files are actually sized
+  ("≥1.4 MiB (12/40 files sized)"), so a partial figure can't be mistaken
+  for a complete one.
+- When none of them is sized — the steady state under `--level=none`,
+  where nothing is ever compared — the size shows as `?` rather than a
+  misleading `0 B`. A directory that genuinely holds no files shows `0 B`,
+  since nothing about it is unknown.
+
 ### 4.3 One-sided navigation
 
 If the directory under the cursor doesn't exist on one side (or is a
@@ -171,6 +211,26 @@ navigate down as long as it exists on *at least one* side:
   with no rows. Cursor movement, selection, and comparison actions apply
   only to the existing side. Pressing "up a level" (parent) still works
   normally from this state — it re-syncs both panes to the shared parent.
+
+### 4.3.1 Above the roots
+
+Pressing "up a level" while already at the root goes up one further
+level, so the two compared directories can be selected as rows in their
+own right and their whole-tree totals (§4.2) read in the details panel.
+This level is **not** a listing of the roots' real parent directories:
+those two directories are unrelated to each other, are never listed, and
+nothing in them is ever compared. The panes show exactly one row — the
+left root in the left pane, the right root in the right pane, named as
+their parent would name them — with the root's own rolled-up status glyph
+in the gutter and its per-side listing-pending indicator, the same as any
+other directory row. Each pane's path title shows that side's parent
+directory, the level being stood in.
+
+Enter/right-arrow on that row descends back into the root listing; there
+is nothing above this level, so "up a level" there does nothing. The row
+status filter (§4.7) never applies to it — it's the only way back down.
+Comparing (`c`) from this level applies to the root, exactly as it would
+from inside it.
 
 ### 4.4 Status bar
 
@@ -455,7 +515,7 @@ plus the full reference via `?` (§4.5).
 |---|---|
 | `↑` / `↓` | Move cursor within current directory listing (both panes move together) |
 | `→` / `Enter` | Navigate into directory under cursor (both panes descend together; one-sided case per §4.3) |
-| `←` / `Backspace` | Navigate to parent directory (both panes ascend together) |
+| `←` / `Backspace` | Navigate to parent directory (both panes ascend together); at the root, up to the two compared roots as a single row (§4.3.1) |
 | `l` | Switch the persistent compare-level setting: metadata (size+date) ↔ content (byte-for-byte) (remembered until changed again) |
 | `r` | Toggle the persistent recursive setting on/off (remembered; default on) |
 | `f` | Open the row-status filter popup: multi-select Left-only / Right-only / Equal / Different (§4.7; remembered like `l`/`r`) |

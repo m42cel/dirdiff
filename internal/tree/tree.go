@@ -76,12 +76,50 @@ type Node struct {
 	// subtree walk there costs a full traversal of the tree several
 	// times a second, forever, even on an idle fully-scanned tree.
 	//
-	// AddChild and ApplyCompareResult are what keep it correct: the
-	// first is the only supported way to link a node into the tree, the
-	// second the only thing that can change a node's status once linked
-	// (Presence is fixed at creation, and a directory's status never
-	// depends on its rollup).
-	descMatches [diffmodel.RowStatusCount]int32
+	// descLeft/descRight are the same idea for the per-side entry counts
+	// and size totals the details panel shows for a directory (SPEC.md
+	// §4.2), maintained by the same upward walk.
+	//
+	// AddChild and ApplyCompareResult are what keep all three correct:
+	// the first is the only supported way to link a node into the tree,
+	// the second the only thing that can change a node's own status or
+	// size once linked (Presence and Type are fixed at creation, and a
+	// directory's status never depends on its rollup).
+	descMatches         [diffmodel.RowStatusCount]int32
+	descLeft, descRight SideTotals
+}
+
+// SideTotals aggregates what one side of a directory's subtree holds, for
+// the details panel (SPEC.md §4.2). Entry counts come from listing, which
+// already knows every entry's type and which side it's on.
+//
+// Size does not: it's only ever the size metadata a comparison had to read
+// anyway (SPEC.md §5.1's metadata level), never a stat call made just to
+// measure. So Files is an upper bound on SizedFiles — an uncompared file,
+// or one that exists on this side only and therefore has nothing to be
+// compared against, counts as an entry with an unknown size — and Size is
+// a lower bound on the side's real size whenever SizedFiles < Files. With
+// --level=none nothing is ever compared and Size stays 0, with SizedFiles
+// == 0 to say so.
+type SideTotals struct {
+	Dirs     int
+	Files    int
+	Symlinks int
+
+	Size       int64
+	SizedFiles int
+}
+
+func (t *SideTotals) add(o SideTotals) {
+	t.Dirs += o.Dirs
+	t.Files += o.Files
+	t.Symlinks += o.Symlinks
+	t.Size += o.Size
+	t.SizedFiles += o.SizedFiles
+}
+
+func (t SideTotals) negated() SideTotals {
+	return SideTotals{Dirs: -t.Dirs, Files: -t.Files, Symlinks: -t.Symlinks, Size: -t.Size, SizedFiles: -t.SizedFiles}
 }
 
 // NewRoot creates the root node of the tree, representing "" (the
@@ -113,8 +151,20 @@ func (n *Node) DescendantsWithStatus(s diffmodel.RowStatus) int {
 	return int(n.descMatches[s])
 }
 
-// statusDelta is a change to a subtree's per-status tallies, applied to
-// a node and all its ancestors by adjustDescendantsUpward.
+// DescendantTotals reports what n's descendants, at any depth, hold on
+// each side (SPEC.md §4.2). n itself is never counted, so a directory row
+// reports what's inside it — and the tree root's totals are the two
+// compared trees in full, which is what the level above the root shows
+// (SPEC.md §4.3.1).
+//
+// Like DescendantsWithStatus, this only covers what's been discovered so
+// far: counts grow as listing proceeds, and SizedFiles/Size grow as
+// comparisons report the sizes they read.
+func (n *Node) DescendantTotals() (left, right SideTotals) {
+	return n.descLeft, n.descRight
+}
+
+// statusDelta is a change to a subtree's per-status tallies.
 type statusDelta [diffmodel.RowStatusCount]int32
 
 func (d *statusDelta) add(other statusDelta) {
@@ -125,18 +175,48 @@ func (d *statusDelta) add(other statusDelta) {
 
 func (d statusDelta) isZero() bool { return d == statusDelta{} }
 
-// adjustDescendantsUpward applies delta to n and every ancestor of n.
-// Cost is the depth of the tree, not the size of the subtree — the same
-// upward walk AdjustPendingCompare and recomputeResultUpward already do
-// for every result that arrives.
-func adjustDescendantsUpward(n *Node, delta statusDelta) {
+func (d statusDelta) negated() statusDelta {
+	var out statusDelta
+	for s, v := range d {
+		out[s] = -v
+	}
+	return out
+}
+
+// subtreeDelta is a change to everything a node aggregates about its
+// descendants — the per-status tallies and the per-side totals — carried
+// together so one upward walk keeps both in sync.
+type subtreeDelta struct {
+	status      statusDelta
+	left, right SideTotals
+}
+
+func (d *subtreeDelta) add(other subtreeDelta) {
+	d.status.add(other.status)
+	d.left.add(other.left)
+	d.right.add(other.right)
+}
+
+func (d subtreeDelta) negated() subtreeDelta {
+	return subtreeDelta{status: d.status.negated(), left: d.left.negated(), right: d.right.negated()}
+}
+
+func (d subtreeDelta) isZero() bool { return d == subtreeDelta{} }
+
+// adjustSubtreeUpward applies delta to n and every ancestor of n. Cost is
+// the depth of the tree, not the size of the subtree — the same upward
+// walk AdjustPendingCompare and recomputeResultUpward already do for every
+// result that arrives.
+func adjustSubtreeUpward(n *Node, delta subtreeDelta) {
 	if delta.isZero() {
 		return
 	}
 	for cur := n; cur != nil; cur = cur.Parent {
-		for s, v := range delta {
+		for s, v := range delta.status {
 			cur.descMatches[s] += v
 		}
+		cur.descLeft.add(delta.left)
+		cur.descRight.add(delta.right)
 	}
 }
 
@@ -146,25 +226,61 @@ func adjustDescendantsUpward(n *Node, delta statusDelta) {
 // leaves those tallies stale, so this is the only supported way to
 // attach a node.
 func AddChild(parent, child *Node) {
-	adjustDescendantsUpward(parent, linkChild(parent, child))
+	adjustSubtreeUpward(parent, linkChild(parent, child))
 }
 
 // linkChild is AddChild without the upward walk: it returns the delta
 // the ancestors still need, so a caller attaching many children at once
 // (ApplyListing) can sum them and walk up a single time.
-func linkChild(parent, child *Node) statusDelta {
+func linkChild(parent, child *Node) subtreeDelta {
 	child.Parent = parent
 	parent.Children = append(parent.Children, child)
 	return contribution(child)
 }
 
-// contribution is what child accounts for in its ancestors' tallies:
-// its own status, if it has one, plus everything its subtree already
-// carries.
-func contribution(child *Node) statusDelta {
-	d := statusDelta(child.descMatches)
-	if s := child.RowStatus(); s != diffmodel.RowNone {
-		d[s]++
+// contribution is what child accounts for in its ancestors' aggregates:
+// everything its own subtree already carries, plus what child itself
+// counts for.
+func contribution(child *Node) subtreeDelta {
+	d := subtreeDelta{status: statusDelta(child.descMatches), left: child.descLeft, right: child.descRight}
+	d.add(ownContribution(child))
+	return d
+}
+
+// ownContribution is what a single node counts for in its ancestors'
+// aggregates, ignoring anything below it: its own filterable status (if it
+// has one), and one entry of its own type on each side it exists on —
+// carrying its size there once a comparison has actually read it. A
+// symlink never contributes a size: comparing one reads the link target,
+// not the file it names (SPEC.md §7), so no size is ever read for it.
+func ownContribution(n *Node) subtreeDelta {
+	var d subtreeDelta
+	if s := n.RowStatus(); s != diffmodel.RowNone {
+		d.status[s]++
+	}
+
+	var one SideTotals
+	switch n.Type {
+	case diffmodel.Dir:
+		one.Dirs = 1
+	case diffmodel.Symlink:
+		one.Symlinks = 1
+	default:
+		one.Files = 1
+	}
+	sized := n.HaveStat && n.Type == diffmodel.File
+
+	if n.Presence != diffmodel.RightOnly {
+		d.left = one
+		if sized {
+			d.left.Size, d.left.SizedFiles = n.LeftSize, 1
+		}
+	}
+	if n.Presence != diffmodel.LeftOnly {
+		d.right = one
+		if sized {
+			d.right.Size, d.right.SizedFiles = n.RightSize, 1
+		}
 	}
 	return d
 }
@@ -192,13 +308,9 @@ func ApplyListing(n *Node, children []diffmodel.ListedChild, leftErr, rightErr e
 	// but a tally left behind by a discarded subtree would surface as
 	// rows showing under a filter nothing beneath them matches — a
 	// symptom with no obvious route back to here.
-	var delta statusDelta
+	var delta subtreeDelta
 	for _, old := range n.Children {
-		var negated statusDelta
-		for s, v := range contribution(old) {
-			negated[s] = -v
-		}
-		delta.add(negated)
+		delta.add(contribution(old).negated())
 	}
 
 	n.Children = make([]*Node, 0, len(children))
@@ -209,7 +321,7 @@ func ApplyListing(n *Node, children []diffmodel.ListedChild, leftErr, rightErr e
 		}))
 	}
 	sortChildren(n.Children)
-	adjustDescendantsUpward(n, delta)
+	adjustSubtreeUpward(n, delta)
 	recomputeResultUpward(n)
 }
 
@@ -229,32 +341,27 @@ func sortChildren(children []*Node) {
 // when present, since it's informational for the details panel rather
 // than part of the comparison verdict.
 func ApplyCompareResult(n *Node, level diffmodel.CompareLevel, result diffmodel.CompareResult, cmpErr error, stat *diffmodel.StatInfo) {
-	before := n.RowStatus()
+	before := ownContribution(n)
 	if level > n.Level {
 		n.Level = level
 		n.Result = result
 		n.Err = cmpErr
-	}
-	// A result is the only thing that can move a row between statuses
-	// once it's in the tree: not-yet-compared to equal or differing, or
-	// equal to differing when a deeper level overrides a shallower
-	// verdict. The ancestors' tallies count descendants only, so the
-	// delta starts at the parent.
-	if after := n.RowStatus(); after != before {
-		var delta statusDelta
-		if before != diffmodel.RowNone {
-			delta[before]--
-		}
-		if after != diffmodel.RowNone {
-			delta[after]++
-		}
-		adjustDescendantsUpward(n.Parent, delta)
 	}
 	if stat != nil {
 		n.HaveStat = true
 		n.LeftSize, n.RightSize = stat.LeftSize, stat.RightSize
 		n.LeftMtime, n.RightMtime = stat.LeftMtime, stat.RightMtime
 	}
+	// A result is the only thing that can change what a row already in
+	// the tree counts for: its status can move from not-yet-compared to
+	// equal or differing (or equal to differing, when a deeper level
+	// overrides a shallower verdict), and its size can become known, or
+	// be re-read at a different value by a later level. The ancestors'
+	// aggregates count descendants only, so the delta starts at the
+	// parent.
+	delta := before.negated()
+	delta.add(ownContribution(n))
+	adjustSubtreeUpward(n.Parent, delta)
 	recomputeResultUpward(n.Parent)
 }
 

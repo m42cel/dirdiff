@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -57,8 +58,8 @@ func (m Model) View() string {
 	// its content width is trimmed by that same 2 columns, matching the
 	// leftWidth/rightWidth truncate() calls below.
 	titleCellStyle := lipgloss.NewStyle().PaddingLeft(2)
-	leftTitle := titleStyle.Render(truncate(displayPath(m.sess.LeftRoot, m.cursorDir.RelPath), leftWidth))
-	rightTitle := titleStyle.Render(truncate(displayPath(m.sess.RightRoot, m.cursorDir.RelPath), rightWidth))
+	leftTitle := titleStyle.Render(truncate(m.paneTitle(m.sess.LeftRoot), leftWidth))
+	rightTitle := titleStyle.Render(truncate(m.paneTitle(m.sess.RightRoot), rightWidth))
 	titleRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		titleCellStyle.Width(leftWidth+paneOverhead).Render(leftTitle),
 		lipgloss.NewStyle().Width(gutterWidth).Render(""),
@@ -97,6 +98,10 @@ func (m Model) View() string {
 // construction, one-sided too, so this only ever triggers at the
 // directory-presence level, not per file.
 func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, right []string) {
+	if m.atRootParent {
+		l, g, r := m.renderRootParentRow(leftWidth, rightWidth)
+		return []string{l}, []string{g}, []string{r}
+	}
 	if !m.cursorDir.Listed {
 		msg := []string{dimStyle.Render("Loading…")}
 		return msg, []string{""}, msg
@@ -168,7 +173,6 @@ func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, sele
 	// up front — sized to the suffix's widest frame (" ..."), not
 	// whichever frame happens to be showing, so the row never reflows as
 	// the animation ticks.
-	const pendingSuffixWidth = 4
 	leftBudget, rightBudget := leftWidth, rightWidth
 	if n.IsDir() {
 		if n.PendingListingLeft > 0 {
@@ -197,14 +201,73 @@ func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, sele
 	// selected row's highlighted width stays constant instead of
 	// growing and shrinking as the animation frame's length changes.
 	if n.IsDir() {
-		if n.PendingListingLeft > 0 {
-			left += pendingStyle.Render(" " + animGlyph(spinnerGlyphFrames, spinnerFrame))
-		}
-		if n.PendingListingRight > 0 {
-			right += pendingStyle.Render(" " + animGlyph(spinnerGlyphFrames, spinnerFrame))
-		}
+		left += listingSuffix(n.PendingListingLeft, spinnerFrame)
+		right += listingSuffix(n.PendingListingRight, spinnerFrame)
 	}
 	return left, gutterCell, right
+}
+
+// pendingSuffixWidth is the width listingSuffix's widest frame (" ...")
+// takes, reserved up front so a truncated name doesn't reflow as the
+// animation ticks through frames of different lengths.
+const pendingSuffixWidth = 4
+
+// listingSuffix is the animated indicator for a directory with listing
+// work still outstanding on one side's subtree — empty when there is none.
+func listingSuffix(pending, spinnerFrame int) string {
+	if pending <= 0 {
+		return ""
+	}
+	return pendingStyle.Render(" " + animGlyph(spinnerGlyphFrames, spinnerFrame))
+}
+
+// renderRootParentRow renders the single row shown above the root
+// (SPEC.md §4.3.1): the two compared directories themselves, named the way
+// a listing of each one's parent would name them. It's always the cursor
+// row, always present on both sides, and never dimmed by the filter, so
+// none of renderRowTriple's per-row cases apply — but the gutter glyph and
+// the per-side listing indicator are the root's own, so a still-scanning
+// tree reads the same here as anywhere else.
+func (m Model) renderRootParentRow(leftWidth, rightWidth int) (left, gutter, right string) {
+	root := m.cursorDir
+	glyph, style := statusGlyph(root, m.sess, m.spinnerFrame)
+
+	leftBudget, rightBudget := leftWidth, rightWidth
+	if root.PendingListingLeft > 0 {
+		leftBudget -= pendingSuffixWidth
+	}
+	if root.PendingListingRight > 0 {
+		rightBudget -= pendingSuffixWidth
+	}
+
+	left = cursorStyle.Render(style.Render(truncate(rootRowName(m.sess.LeftRoot)+"/", leftBudget)))
+	right = cursorStyle.Render(style.Render(truncate(rootRowName(m.sess.RightRoot)+"/", rightBudget)))
+	left += listingSuffix(root.PendingListingLeft, m.spinnerFrame)
+	right += listingSuffix(root.PendingListingRight, m.spinnerFrame)
+	return left, cursorStyle.Render(style.Render(glyph)), right
+}
+
+// rootRowName is how a root directory is named as a row of its own parent:
+// its last path element. A root with no last element to call its own ("/",
+// or a relative "." / "..") keeps its whole path instead, since a row
+// labeled "." sitting under a pane titled "." says nothing.
+func rootRowName(root string) string {
+	switch base := filepath.Base(root); base {
+	case ".", "..", string(filepath.Separator):
+		return root
+	default:
+		return base
+	}
+}
+
+// paneTitle is the path shown above a pane. Above the root (SPEC.md §4.3.1)
+// that's the root's own parent directory — the level actually being stood
+// in, even though none of its other entries are listed there.
+func (m Model) paneTitle(root string) string {
+	if m.atRootParent {
+		return filepath.Dir(root)
+	}
+	return displayPath(root, m.cursorDir.RelPath)
 }
 
 func styleIfNotEmpty(s string, style lipgloss.Style) string {
@@ -326,10 +389,31 @@ func (m Model) renderDetails() string {
 	}
 	n := children[m.cursorIdx]
 
-	lines := []string{fmt.Sprintf("%s%s  [%s]", n.Name, typeGlyph(n.Type), presenceLabel(n.Presence))}
-	if n.HaveStat {
-		lines = append(lines, fmt.Sprintf("left:  size=%-10d mtime=%s", n.LeftSize, n.LeftMtime.Local().Format("2006-01-02 15:04:05")))
-		lines = append(lines, fmt.Sprintf("right: size=%-10d mtime=%s", n.RightSize, n.RightMtime.Local().Format("2006-01-02 15:04:05")))
+	lines := []string{m.detailsTitle(n)}
+	switch {
+	case n.IsDir():
+		// A directory's own size is meaningless here; what it contains is
+		// the interesting number (SPEC.md §4.2), and it's a live one — both
+		// counts and sizes grow as background listing and comparison
+		// results arrive. A left-only/right-only directory has nothing at
+		// all on its missing side — not a subtree that happens to total
+		// zero — so that line names it as absent (the same wording as the
+		// one-sided pane placeholder, §4.3) rather than being printed as
+		// "0 directories · 0 files · 0 B", which would misreport absence
+		// as an empty-but-existing directory.
+		leftTotals, rightTotals := n.DescendantTotals()
+		left, right := doesNotExistText, doesNotExistText
+		if n.Presence != diffmodel.RightOnly {
+			left = totalsLabel(leftTotals)
+		}
+		if n.Presence != diffmodel.LeftOnly {
+			right = totalsLabel(rightTotals)
+		}
+		lines = append(lines, "left:  "+left, "right: "+right)
+	case n.HaveStat:
+		lines = append(lines,
+			fmt.Sprintf("left:  size=%-22s mtime=%s", fileSizeLabel(n.LeftSize), n.LeftMtime.Local().Format("2006-01-02 15:04:05")),
+			fmt.Sprintf("right: size=%-22s mtime=%s", fileSizeLabel(n.RightSize), n.RightMtime.Local().Format("2006-01-02 15:04:05")))
 	}
 	if n.Presence == diffmodel.Both {
 		lines = append(lines, "compared by: "+nodeCompareLevelLabel(n))
@@ -338,6 +422,98 @@ func (m Model) renderDetails() string {
 		lines = append(lines, errorStyle.Render("error: "+oneLine(n.Err.Error())))
 	}
 	return padDetailsLines(lines)
+}
+
+// detailsTitle names the selected row. The tree root has no name of its
+// own — it *is* the two compared directories — so above the root (SPEC.md
+// §4.3.1) it's titled with both root paths instead of an empty name.
+func (m Model) detailsTitle(n *tree.Node) string {
+	if n == m.sess.Tree {
+		// Two full paths can easily outrun the panel, which has to stay
+		// exactly detailsContentLines tall (see padDetailsLines).
+		return truncate(fmt.Sprintf("%s ↔ %s  [compared roots]", m.sess.LeftRoot, m.sess.RightRoot), m.width)
+	}
+	return fmt.Sprintf("%s%s  [%s]", n.Name, typeGlyph(n.Type), presenceLabel(n.Presence))
+}
+
+// totalsLabel summarizes one side of a directory's subtree: how many
+// entries it holds, and how large they are.
+//
+// Size is only ever what a comparison already had to read (SPEC.md §4.2),
+// so it's reported as a "≥" lower bound while any file under the directory
+// hasn't been compared — with the sized/total count saying how much is
+// still missing — and as an unknown "?" when none has been, which is the
+// steady state under --level=none. A directory holding no files at all
+// reports a plain 0 B: nothing is unknown there.
+func totalsLabel(t tree.SideTotals) string {
+	parts := []string{
+		fmt.Sprintf("%d %s", t.Dirs, directoryWord(t.Dirs)),
+		fmt.Sprintf("%d files", t.Files),
+	}
+	if t.Symlinks > 0 {
+		// Symlinks are counted apart from files because they're never
+		// sized: comparing one reads its target string, not a file
+		// (SPEC.md §7), so folding them into the file count would leave the
+		// sized-file tally permanently short of it.
+		parts = append(parts, fmt.Sprintf("%d links", t.Symlinks))
+	}
+	switch {
+	case t.SizedFiles == 0 && t.Files > 0:
+		parts = append(parts, "size ?")
+	case t.SizedFiles < t.Files:
+		parts = append(parts, fmt.Sprintf("≥%s (%d/%d files sized)", humanSize(t.Size), t.SizedFiles, t.Files))
+	default:
+		parts = append(parts, humanSize(t.Size))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// directoryWord is "directory" for a count of exactly one, "directories"
+// otherwise — spelled out in full rather than abbreviated to "dirs" since
+// this is the one count in the details panel without an obvious shorter
+// form ("files"/"links" already read fine abbreviated).
+func directoryWord(n int) string {
+	if n == 1 {
+		return "directory"
+	}
+	return "directories"
+}
+
+// fileSizeLabel shows a single file's size human-readably but keeps the
+// exact byte count alongside it: the metadata level calls two files
+// different on an exact size mismatch, which rounded units can easily
+// render as the same number.
+func fileSizeLabel(bytes int64) string {
+	if bytes < sizeUnit {
+		return humanSize(bytes)
+	}
+	return fmt.Sprintf("%s (%d B)", humanSize(bytes), bytes)
+}
+
+// sizeUnit is 1024: sizes are shown in base-2 units (KiB, MiB, …), the
+// ones that match how filesystems actually allocate.
+const sizeUnit = 1024
+
+var sizeUnits = []string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+
+// humanSize formats a byte count in base-2 units. One decimal place below
+// 10 keeps small values informative ("1.4 MiB") without implying precision
+// the rounding doesn't have.
+func humanSize(bytes int64) string {
+	if bytes < sizeUnit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	// divisions counts how many times bytes was divided down, which is
+	// 1-based into sizeUnits: one division lands on KiB, sizeUnits[0].
+	v, divisions := float64(bytes), 0
+	for v >= sizeUnit && divisions < len(sizeUnits) {
+		v /= sizeUnit
+		divisions++
+	}
+	if v < 10 {
+		return fmt.Sprintf("%.1f %s", v, sizeUnits[divisions-1])
+	}
+	return fmt.Sprintf("%.0f %s", v, sizeUnits[divisions-1])
 }
 
 // padDetailsLines pads or truncates lines to exactly detailsContentLines
@@ -421,7 +597,7 @@ func helpView() string {
 		"PgUp/PgDn      move by page",
 		"Home / End     jump to first / last entry",
 		"→ / Enter      open directory (both panes navigate together)",
-		"← / Backspace  up to parent directory",
+		"← / Backspace  up to parent directory — at the root, up to both compared roots as a single row (whole-tree totals)",
 		"l              switch compare level — metadata (size + date) ↔ content (byte-for-byte) (remembered)",
 		"r              toggle recursive on/off (remembered, default on)",
 		"f              open row-status filter popup: multi-select Left-only / Right-only / Equal / Different — space toggles, enter confirms (remembered)",

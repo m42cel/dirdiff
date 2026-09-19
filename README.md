@@ -73,7 +73,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | `PgUp` / `PgDn` | Move by page |
 | `Home` / `End` | Jump to first / last entry |
 | `→` / `Enter` | Open the directory under the cursor (both panes navigate together) |
-| `←` / `Backspace` | Go up to the parent directory |
+| `←` / `Backspace` | Go up to the parent directory — at the root, up to both compared roots as a single row |
 | `l` | Switch the compare level — metadata (size + mtime) ↔ content (byte-for-byte) — remembered until changed again |
 | `r` | Toggle recursive mode on/off — remembered, default on |
 | `f` | Open the row-status filter popup — multi-select Left-only / Right-only / Equal / Different, space to toggle, enter to confirm — remembered like `l`/`r` |
@@ -88,6 +88,38 @@ A directory that exists on only one side is still navigable — the
 missing side shows a static placeholder. Existence is shown as soon as a
 directory is listed; metadata/content comparisons only run once you
 trigger them with `c`.
+
+### Directory totals
+
+The details panel at the bottom describes the row under the cursor. For a
+directory that's what its subtree holds, per side: how many directories,
+files, and symlinks are beneath it at any depth, plus the total size of
+those files. Both counts and size update live as the background scan and
+comparisons progress, and each side is counted on its own, so an entry
+present on only one side counts only there. A directory that only exists
+on one side has nothing to total on the other, so that side's line reads
+`<does not exist>` rather than an all-zero total.
+
+Sizes are shown in base-2 units (KiB, MiB, GiB, …), and a single file's
+size also names its exact byte count — the metadata level calls two files
+different on an exact size mismatch, which rounded units can hide.
+
+Size is never measured for its own sake: it's only ever the size a
+comparison had to read anyway, so `dirdiff` issues no extra `stat()` call
+just to total a directory. That means a file not yet compared — or one
+that exists on a single side, so there's nothing to compare it with —
+adds nothing to the total, and symlinks never do (comparing one reads its
+link target, not a file, which is why they're counted apart from files).
+While anything under a directory is still unsized the total reads as a
+lower bound with the sized count next to it (`≥1.4 MiB (12/40 files
+sized)`); when nothing under it is sized — as stays the case under
+`--level=none`, where nothing is ever compared — the size shows as `?`.
+
+Pressing `←` at the root goes up one more level, where the only row is
+the pair of compared directories themselves — select it to read the
+totals for each tree as a whole. That level isn't a listing of the roots'
+real parent directories: nothing else in them is shown, listed, or
+compared. `Enter` on the row goes back down into the roots.
 
 The row-status filter (`f`) hides everything in the current listing that
 doesn't match one of the selected statuses, except that a directory

@@ -67,7 +67,14 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   no-op on Level/Result if the incoming level isn't deeper than what's
   already known (spec §5.3 monotonicity), though stat metadata is always
   refreshed. **Nodes are mutated exclusively from the UI's Update loop**
-  (a single goroutine) — nothing in this package takes a lock.
+  (a single goroutine) — nothing in this package takes a lock. Every
+  per-subtree aggregate the UI reads — the row filter's per-status
+  descendant tallies and the details panel's per-side `SideTotals`
+  (counts + size, spec §4.2) — is kept incrementally via one upward
+  `subtreeDelta` walk per mutation, never a subtree walk at render time;
+  `ownContribution` is the single definition of what one node counts
+  for, so the oracle tests in `descendants_test.go`/`totals_test.go`
+  have exactly one place to disagree with.
   Each node also carries `descMatches`, a per-`RowStatus` tally of its
   descendants that answers the filter's "is there a matching row below?"
   in O(1) instead of a subtree walk per render; `AddChild` is therefore
@@ -101,7 +108,13 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   `View()` runs once per Bubble Tea message — every scan/compare result
   and every spinner tick — so anything it does per row is on a very hot
   path: keep it O(visible rows), never O(subtree). That's why the row
-  filter reads `tree`'s tallies instead of searching the subtree itself.
+  filter and the details panel's directory totals both read `tree`'s
+  aggregates instead of walking the subtree themselves. `atRootParent`
+  is the one view with no `tree.Node` of its own (spec §4.3.1):
+  `cursorDir` stays the root and `visibleChildren` synthesizes a single
+  unfilterable row for it, so the two roots' whole-tree totals are
+  selectable without inventing a parent node the scanner would then try
+  to list and compare.
 - **`cmd/dirdiff`** — flag parsing (`--level`, `--workers`), startup path
   validation (hard error to stderr, exit 1, before the TUI starts — spec
   §2.2), wires up `session.New` + `ui.New` + `tea.Program`.

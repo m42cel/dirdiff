@@ -13,6 +13,8 @@ a comparison to run (metadata, i.e. size + mtime, or a full byte-for-byte
 content comparison), and where (just the current directory, or
 recursively).
 
+![dirdiff comparing a project directory with its backup copy](docs/screenshot.png)
+
 See [SPEC.md](SPEC.md) for the full design and rationale.
 
 ## Requirements

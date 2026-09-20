@@ -89,7 +89,11 @@ func TestTotalsLabel(t *testing.T) {
 	}, {
 		name:   "symlinks are counted apart from files and never sized",
 		totals: tree.SideTotals{Files: 1, Symlinks: 2, Size: 512, SizedFiles: 1},
-		want:   "0 directories · 1 files · 2 links · 512 B",
+		want:   "0 directories · 1 file · 2 links · 512 B",
+	}, {
+		name:   "every count reads singular at exactly one",
+		totals: tree.SideTotals{Dirs: 1, Files: 1, Symlinks: 1, Size: 512, SizedFiles: 1},
+		want:   "1 directory · 1 file · 1 link · 512 B",
 	}}
 	for _, c := range cases {
 		if got := totalsLabel(c.totals); got != c.want {
@@ -154,7 +158,7 @@ func TestDetailsPanelMarksMissingSideAsNotExisting(t *testing.T) {
 	// at all under it — no subtree exists there to total — so that line
 	// names it as absent, not "0 directories · 0 files · 0 B".
 	got := lines()
-	if got[1] != "left:  0 directories · 1 files · size ?" {
+	if got[1] != "left:  0 directories · 1 file · size ?" {
 		t.Errorf("left-only dir's left line = %q; want its real (uncompared) totals", got[1])
 	}
 	if got[2] != "right: "+doesNotExistText {
@@ -198,7 +202,7 @@ func TestAscendAboveRootShowsBothRootsAsOneRow(t *testing.T) {
 	if !strings.Contains(details, sess.LeftRoot) || !strings.Contains(details, sess.RightRoot) {
 		t.Errorf("details = %q; want both root paths named, since the root row has no name of its own", details)
 	}
-	if !strings.Contains(details, "0 directories · 1 files · 2.0 KiB") {
+	if !strings.Contains(details, "0 directories · 1 file · 2.0 KiB") {
 		t.Errorf("details = %q; want the whole tree's totals", details)
 	}
 

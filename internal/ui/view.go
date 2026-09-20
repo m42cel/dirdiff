@@ -447,15 +447,18 @@ func (m Model) detailsTitle(n *tree.Node) string {
 // reports a plain 0 B: nothing is unknown there.
 func totalsLabel(t tree.SideTotals) string {
 	parts := []string{
-		fmt.Sprintf("%d %s", t.Dirs, directoryWord(t.Dirs)),
-		fmt.Sprintf("%d files", t.Files),
+		// "directory"/"directories" is spelled out in full rather than
+		// abbreviated to "dirs" — it's the one count in the details panel
+		// without an obvious shorter form.
+		countLabel(t.Dirs, "directory", "directories"),
+		countLabel(t.Files, "file", "files"),
 	}
 	if t.Symlinks > 0 {
 		// Symlinks are counted apart from files because they're never
 		// sized: comparing one reads its target string, not a file
 		// (SPEC.md §7), so folding them into the file count would leave the
 		// sized-file tally permanently short of it.
-		parts = append(parts, fmt.Sprintf("%d links", t.Symlinks))
+		parts = append(parts, countLabel(t.Symlinks, "link", "links"))
 	}
 	switch {
 	case t.SizedFiles == 0 && t.Files > 0:
@@ -468,15 +471,14 @@ func totalsLabel(t tree.SideTotals) string {
 	return strings.Join(parts, " · ")
 }
 
-// directoryWord is "directory" for a count of exactly one, "directories"
-// otherwise — spelled out in full rather than abbreviated to "dirs" since
-// this is the one count in the details panel without an obvious shorter
-// form ("files"/"links" already read fine abbreviated).
-func directoryWord(n int) string {
+// countLabel pairs a count with its noun, taking the singular form for
+// exactly one.
+func countLabel(n int, singular, plural string) string {
+	word := plural
 	if n == 1 {
-		return "directory"
+		word = singular
 	}
-	return "directories"
+	return fmt.Sprintf("%d %s", n, word)
 }
 
 // fileSizeLabel shows a single file's size human-readably but keeps the

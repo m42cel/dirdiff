@@ -64,6 +64,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | `--level=<level>` | Auto-apply a comparison level (`metadata`, `content`, or `none`) to the whole tree recursively in the background as it's discovered, instead of comparing manually. Default: `metadata`. |
 | `--scan-workers=<n>` | Size of the directory-listing worker pool (default: `1` — listing is cheap, low-CPU I/O that doesn't benefit from scaling with core count). |
 | `--compare-workers=<n>` | Size of the comparison worker pool (default: number of CPUs). |
+| `--version` | Print version, commit, and platform, then exit. Released binaries report their tag (`dirdiff v1.0.0 (b1946ac92492, go1.27.1, darwin/arm64)`); builds made from a source checkout report `dev` plus the commit they came from, and a `go install`ed binary reports the module version it was installed at. |
 
 ### Keybindings
 

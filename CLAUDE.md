@@ -115,7 +115,10 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   unfilterable row for it, so the two roots' whole-tree totals are
   selectable without inventing a parent node the scanner would then try
   to list and compare.
-- **`cmd/dirdiff`** — flag parsing (`--level`, `--workers`), startup path
+- **`cmd/dirdiff`** — flag parsing (`--level`, `--scan-workers`,
+  `--compare-workers`, `--version` — handled before the positional-argument
+  check so it works on its own, and the release version comes from
+  `-ldflags "-X main.version=…"`, see `version.go`), startup path
   validation (hard error to stderr, exit 1, before the TUI starts — spec
   §2.2), wires up `session.New` + `ui.New` + `tea.Program`.
 

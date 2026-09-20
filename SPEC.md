@@ -32,6 +32,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | `--level=<level>` | Initial comparison level to auto-apply recursively across the whole tree as results come in. One of `metadata`, `content`, `none`. Default: `metadata`. `none` opts back into existence-only (listing/matching, no auto-compare). |
 | `--scan-workers=<n>` | Concurrency of the listing worker pool. Default: `1` (§8.2). |
 | `--compare-workers=<n>` | Concurrency of the checksum/compare worker pool. Default: `GOMAXPROCS` (§8.2). |
+| `--version` | Print version, commit and platform to stdout and exit 0, without entering the TUI. Valid on its own — the two directory arguments are not required with it. |
 
 No other flags in v1 (no hidden-file toggle — dotfiles are always shown, no
 config persistence, no export). Row-status filtering is available at

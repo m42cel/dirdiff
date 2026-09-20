@@ -48,6 +48,62 @@ func TestVersionString(t *testing.T) {
 	}
 }
 
+func TestResolveVersion(t *testing.T) {
+	const (
+		rev   = "b1946ac92492d2347c6235b4d2611184"
+		pseud = "v0.0.0-20260920104418-2bec4bd714d2"
+	)
+
+	tests := []struct {
+		name        string
+		injected    string
+		mainVersion string
+		rev         string
+		want        string
+	}{
+		{
+			name:        "injected release wins over everything",
+			injected:    "v1.0.0",
+			mainVersion: pseud,
+			rev:         rev,
+			want:        "v1.0.0",
+		},
+		{
+			name:        "module proxy install has no revision to fall back on",
+			injected:    devVersion,
+			mainVersion: "v1.0.0",
+			want:        "v1.0.0",
+		},
+		{
+			name:        "build from a checkout keeps dev, not its pseudo-version",
+			injected:    devVersion,
+			mainVersion: pseud,
+			rev:         rev,
+			want:        devVersion,
+		},
+		{
+			name:        "source copy without a repository",
+			injected:    devVersion,
+			mainVersion: "(devel)",
+			want:        devVersion,
+		},
+		{
+			name:     "no build info at all",
+			injected: devVersion,
+			want:     devVersion,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveVersion(tt.injected, tt.mainVersion, tt.rev); got != tt.want {
+				t.Errorf("resolveVersion(%q, %q, %q) = %q, want %q",
+					tt.injected, tt.mainVersion, tt.rev, got, tt.want)
+			}
+		})
+	}
+}
+
 // The binary must always be able to identify itself, whatever the
 // toolchain did or didn't stamp.
 func TestCurrentVersionStringNonEmpty(t *testing.T) {

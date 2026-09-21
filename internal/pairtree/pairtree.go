@@ -297,9 +297,9 @@ func ownContribution(n *Node) statusDelta {
 	return d
 }
 
-// ChildPairRel computes the pairing-relative path of a child named name
+// childPairRel computes the pairing-relative path of a child named name
 // under parent.
-func ChildPairRel(parent *Node, name string) string {
+func childPairRel(parent *Node, name string) string {
 	if parent.PairRel == "" {
 		return name
 	}
@@ -371,7 +371,7 @@ func Merge(n *Node) (added []*Node) {
 		child := &Node{
 			Left: s.left, Right: s.right,
 			Type:    k.typ,
-			PairRel: ChildPairRel(n, k.name),
+			PairRel: childPairRel(n, k.name),
 		}
 		delta.add(linkChild(n, child))
 		added = append(added, child)

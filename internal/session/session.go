@@ -671,9 +671,3 @@ func (s *Session) Stats() QueueStats {
 		CmpPending: s.examineQ.PendingCount(), CmpActive: s.examineQ.ActiveCount(),
 	}
 }
-
-// IsListPending reports whether relPath's listing on one side is queued
-// or in-flight.
-func (s *Session) IsListPending(sd diffmodel.Side, relPath string) bool {
-	return s.listQ.IsPending(sideKey(sd, relPath))
-}

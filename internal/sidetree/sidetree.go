@@ -118,8 +118,8 @@ func (n *Node) IsDir() bool { return n.Type == diffmodel.Dir }
 // proceeds, and SizedFiles/Size grow as metadata arrives.
 func (n *Node) Totals() Totals { return n.totals }
 
-// ChildRelPath computes the RelPath of a child named name under parent.
-func ChildRelPath(parent *Node, name string) string {
+// childRelPath computes the RelPath of a child named name under parent.
+func childRelPath(parent *Node, name string) string {
 	if parent.RelPath == "" {
 		return name
 	}
@@ -142,7 +142,7 @@ func (t *Tree) ApplyListing(n *Node, entries []diffmodel.ListedEntry, listErr er
 
 	n.Children = make([]*Node, 0, len(entries))
 	for _, e := range entries {
-		c := &Node{Name: e.Name, Type: e.Type, RelPath: ChildRelPath(n, e.Name)}
+		c := &Node{Name: e.Name, Type: e.Type, RelPath: childRelPath(n, e.Name)}
 		delta.add(linkChild(n, c))
 		t.Index[c.RelPath] = c
 	}
@@ -195,17 +195,10 @@ func AdjustPendingStat(n *Node, delta int) {
 	}
 }
 
-// AddChild links child — with whatever subtree it already carries —
-// into parent's Children, and folds its totals into parent and every
-// ancestor. Assigning to Children directly leaves those totals stale, so
-// this is the only supported way to attach a node.
-func AddChild(parent, child *Node) {
-	adjustTotalsUpward(parent, linkChild(parent, child))
-}
-
-// linkChild is AddChild without the upward walk: it returns the delta
-// the ancestors still need, so a caller attaching many children at once
-// (ApplyListing) can sum them and walk up a single time.
+// linkChild attaches child to parent and returns the delta the
+// ancestors still need, so ApplyListing can sum every child's and walk
+// up a single time. It's the only way a node is linked in — assigning to
+// Children directly would leave the totals stale.
 func linkChild(parent, child *Node) Totals {
 	child.Parent = parent
 	parent.Children = append(parent.Children, child)

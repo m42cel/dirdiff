@@ -68,6 +68,24 @@ type view struct {
 	atRootParent bool
 }
 
+// selection is a sub-compare being chosen, one side at a time: the panes
+// navigate in lockstep (SPEC.md §4.1), so there is no moment at which the
+// cursor stands in two unrelated directories — instead 'p' starts this,
+// Space chooses the directory under the cursor for whichever side is
+// being picked, and the second choice opens the pairing.
+type selection struct {
+	// side is the side being chosen right now; left is what was chosen
+	// for the left side, once side has moved on to Right.
+	side diffmodel.Side
+	left *sidetree.Node
+
+	// origin is where 'p' was pressed. Cancelling restores it, and it —
+	// not wherever the hunt for the second directory ended — is what goes
+	// on the view stack, so leaving the sub-compare later lands where the
+	// whole operation started.
+	origin view
+}
+
 // Model is the root Bubble Tea model.
 type Model struct {
 	sess *session.Session
@@ -78,13 +96,10 @@ type Model struct {
 	view
 	stack []view
 
-	// markLeft/markRight are the two ends of a sub-compare being set up
-	// (SPEC.md §4.9): panes navigate in lockstep, so there's no moment at
-	// which the cursor stands in two unrelated directories — you mark one
-	// side at a time, from wherever you are, and pair the marks with 'p'.
-	// They point at sidetree nodes, not at rows, so a mark survives
-	// navigating anywhere and opening or closing any pairing.
-	markLeft, markRight *sidetree.Node
+	// picking is the sub-compare being set up (SPEC.md §4.9), or nil when
+	// there is none. It's replaced wholesale rather than mutated, so a
+	// copy of the Model never shares one with its successor.
+	picking *selection
 
 	// note is a one-off line for the status bar — why a keypress did
 	// nothing, usually — shown until the next keypress.
@@ -333,11 +348,72 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 	// exactly until the next one.
 	m.note = ""
 
+	if m.picking != nil {
+		return m.handleSelectionKey(key)
+	}
+
 	switch key {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "?":
 		m.showHelp = true
+	case "l":
+		m.cycleCompareLevel()
+	case "r":
+		m.recursive = !m.recursive
+	case "f":
+		m.showFilterMenu = true
+		m.filterCursor = 0
+		m.filterEditing = cloneFilterSet(m.filter)
+	case "w":
+		m.showWorkersMenu = true
+		m.workersCursor = 0
+		m.editingWorkers = false
+		m.workersInput = ""
+	case "c":
+		m.triggerCompare()
+	case "C":
+		m.triggerCompareDir()
+	case "p":
+		m.startSelection()
+	case "n":
+		m.jumpDiff(true)
+	case "N":
+		m.jumpDiff(false)
+	case "x":
+		m.sess.CancelPendingCompares()
+	default:
+		m.navigate(key)
+	}
+	return m, nil
+}
+
+// handleSelectionKey dispatches a keypress while a sub-compare is being
+// chosen (SPEC.md §4.9). The mode *adds* a key rather than rebinding
+// any: every movement key — →/Enter to descend included — keeps meaning
+// exactly what it means outside, so there is nothing to unlearn on the
+// way in or out, and no way to confirm a choice by reflex.
+func (m Model) handleSelectionKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "?":
+		m.showHelp = true
+	case " ":
+		m.choose()
+	case "esc", "p":
+		m.cancelSelection()
+	default:
+		m.navigate(key)
+	}
+	return m, nil
+}
+
+// navigate handles the movement keys, which are shared by the normal
+// view and sub-compare selection. It reports whether key was one of
+// them.
+func (m *Model) navigate(key string) bool {
+	switch key {
 	case "up":
 		if m.cursorIdx > 0 {
 			m.cursorIdx--
@@ -364,37 +440,10 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.enter()
 	case "left", "backspace":
 		m.ascend()
-	case "l":
-		m.cycleCompareLevel()
-	case "r":
-		m.recursive = !m.recursive
-	case "f":
-		m.showFilterMenu = true
-		m.filterCursor = 0
-		m.filterEditing = cloneFilterSet(m.filter)
-	case "w":
-		m.showWorkersMenu = true
-		m.workersCursor = 0
-		m.editingWorkers = false
-		m.workersInput = ""
-	case "c":
-		m.triggerCompare()
-	case "C":
-		m.triggerCompareDir()
-	case "[":
-		m.mark(diffmodel.Left)
-	case "]":
-		m.mark(diffmodel.Right)
-	case "p":
-		m.openSubCompare()
-	case "n":
-		m.jumpDiff(true)
-	case "N":
-		m.jumpDiff(false)
-	case "x":
-		m.sess.CancelPendingCompares()
+	default:
+		return false
 	}
-	return m, nil
+	return true
 }
 
 func (m *Model) moveCursor(delta int) {
@@ -486,38 +535,54 @@ func (m *Model) triggerCompareDir() {
 	m.sess.TriggerCompare(m.pairing, m.cursorDir, m.compareLevel, m.recursive)
 }
 
-// mark records one side of the row under the cursor as an end of a
-// sub-compare (SPEC.md §4.9). It's a no-op, with a note, on a row that
-// has no such side, or on anything but a directory: pairing two files
-// would be a one-row view of no value.
-func (m *Model) mark(sd diffmodel.Side) {
+// startSelection begins choosing a sub-compare ('p', SPEC.md §4.9),
+// starting with its left side.
+func (m *Model) startSelection() {
+	m.picking = &selection{side: diffmodel.Left, origin: m.view}
+}
+
+// cancelSelection abandons the selection and puts the view back where it
+// started, since navigating around to find a directory was incidental to
+// an operation that didn't happen.
+func (m *Model) cancelSelection() {
+	m.view = m.picking.origin
+	m.picking = nil
+	m.sess.Navigate(m.pairing, m.cursorDir)
+}
+
+// choose takes the directory under the cursor as the side currently
+// being picked (Space). The first choice moves on to the other side; the
+// second opens the pairing. It's a no-op, with a note, on a row that has
+// no such side or isn't a directory — pairing two files would be a
+// one-row view of no value — and the selection stays open so the next
+// candidate is one keypress away.
+func (m *Model) choose() {
 	visible := m.visibleChildren()
 	if m.cursorIdx >= len(visible) {
 		return
 	}
 	n := visible[m.cursorIdx]
+	sd := m.picking.side
 	sn := n.Side(sd)
 	switch {
 	case sn == nil:
-		m.note = fmt.Sprintf("%s doesn't exist on the %s", m.rowLabel(n, sd), sideLabel(sd))
+		m.note = fmt.Sprintf("%s doesn't exist on the %s — choose one that does", m.rowLabel(n, sd), sideLabel(sd))
+		return
 	case !sn.IsDir():
 		m.note = "a sub-compare pairs two directories, not files"
-	case sd == diffmodel.Left:
-		m.markLeft = sn
-	default:
-		m.markRight = sn
-	}
-}
-
-// openSubCompare pairs the two marks and pushes the result on the view
-// stack (SPEC.md §4.9). The marks are cleared once it's open, so the
-// next pairing starts from a clean slate.
-func (m *Model) openSubCompare() {
-	if m.markLeft == nil || m.markRight == nil {
-		m.note = "mark a directory on each side first — [ for left, ] for right"
 		return
 	}
-	id, err := m.sess.OpenPairing(m.markLeft, m.markRight)
+	if sd == diffmodel.Left {
+		m.picking = &selection{side: diffmodel.Right, left: sn, origin: m.picking.origin}
+		return
+	}
+	m.openSubCompare(m.picking.left, sn)
+}
+
+// openSubCompare pairs the two chosen directories and pushes the result
+// on the view stack (SPEC.md §4.9).
+func (m *Model) openSubCompare(left, right *sidetree.Node) {
+	id, err := m.sess.OpenPairing(left, right)
 	if err != nil {
 		m.note = err.Error()
 		return
@@ -526,9 +591,9 @@ func (m *Model) openSubCompare() {
 	if !ok {
 		return
 	}
-	m.stack = append(m.stack, m.view)
+	m.stack = append(m.stack, m.picking.origin)
 	m.view = view{pairing: id, root: p.Root, cursorDir: p.Root}
-	m.markLeft, m.markRight = nil, nil
+	m.picking = nil
 	m.sess.Navigate(id, p.Root)
 }
 
@@ -588,6 +653,12 @@ func (m *Model) ascend() {
 			m.atRootParent = true
 			m.cursorIdx = 0
 			m.scrollOffset = 0
+			return
+		}
+		if m.picking != nil {
+			// Leaving the pairing mid-choice would close the very view the
+			// selection started in, so the way out is to finish or cancel.
+			m.note = "finish the sub-compare selection or cancel it (Esc) before leaving"
 			return
 		}
 		m.popSubCompare()

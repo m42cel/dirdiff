@@ -123,7 +123,7 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 		for i := m.scrollOffset; i < end; i++ {
 			c := children[i]
 			dim := !m.filter.isAll() && !matchesFilter(c, m.filter)
-			l, g, r := renderRowTriple(c, m.spinnerFrame, i == m.cursorIdx, dim, leftWidth, rightWidth)
+			l, g, r := m.renderRowTriple(c, i == m.cursorIdx, dim, leftWidth, rightWidth)
 			left = append(left, l)
 			gutter = append(gutter, g)
 			right = append(right, r)
@@ -152,8 +152,8 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 // in favor of color alone). dim marks a row shown only because it has a
 // descendant matching the active filter, not because it matches itself
 // (SPEC.md §4.7) — faded to distinguish a path-through from a real hit.
-func renderRowTriple(n *pairtree.Node, spinnerFrame int, selected, dim bool, leftWidth, rightWidth int) (left, gutter, right string) {
-	glyph, style := statusGlyph(n, spinnerFrame)
+func (m Model) renderRowTriple(n *pairtree.Node, selected, dim bool, leftWidth, rightWidth int) (left, gutter, right string) {
+	glyph, style := statusGlyph(n, m.spinnerFrame)
 	if dim {
 		style = style.Faint(true)
 	}
@@ -183,11 +183,14 @@ func renderRowTriple(n *pairtree.Node, spinnerFrame int, selected, dim bool, lef
 			rightBudget -= pendingSuffixWidth
 		}
 	}
-	leftName = truncate(leftName, leftBudget)
-	rightName = truncate(rightName, rightBudget)
 
-	left = placeholderIfEmpty(styleIfNotEmpty(leftName, style))
-	right = placeholderIfEmpty(styleIfNotEmpty(rightName, style))
+	leftStyle, leftPick := m.sideStyle(n, diffmodel.Left, style)
+	rightStyle, rightPick := m.sideStyle(n, diffmodel.Right, style)
+	leftName = truncate(leftName, leftBudget-len([]rune(leftPick)))
+	rightName = truncate(rightName, rightBudget-len([]rune(rightPick)))
+
+	left = placeholderIfEmpty(styleIfNotEmpty(leftPick+leftName, leftStyle))
+	right = placeholderIfEmpty(styleIfNotEmpty(rightPick+rightName, rightStyle))
 	if selected {
 		left = cursorStyle.Render(left)
 		gutterCell = cursorStyle.Render(gutterCell)
@@ -202,10 +205,33 @@ func renderRowTriple(n *pairtree.Node, spinnerFrame int, selected, dim bool, lef
 	// selected row's highlighted width stays constant instead of
 	// growing and shrinking as the animation frame's length changes.
 	if n.IsDir() {
-		left += listingSuffix(pendingLeft, spinnerFrame)
-		right += listingSuffix(pendingRight, spinnerFrame)
+		left += listingSuffix(pendingLeft, m.spinnerFrame)
+		right += listingSuffix(pendingRight, m.spinnerFrame)
 	}
 	return left, gutterCell, right
+}
+
+// pickedGlyph precedes the directory already chosen as one end of a
+// sub-compare, so the choice reads without relying on color (SPEC.md §6).
+const pickedGlyph = "▸"
+
+// sideStyle is how one side of a row is drawn, and what precedes its
+// name. Outside a sub-compare selection that's just the row's status
+// style and nothing. During one, the side not currently being chosen
+// fades, shifting the eye to the column the choice is coming from — and
+// the directory already chosen is marked out instead, since the whole
+// point of marking it is that it stays findable, fade or no fade.
+func (m Model) sideStyle(n *pairtree.Node, sd diffmodel.Side, base lipgloss.Style) (lipgloss.Style, string) {
+	if m.picking == nil {
+		return base, ""
+	}
+	if sn := n.Side(sd); sn != nil && sn == m.picking.left {
+		return pickedStyle, pickedGlyph
+	}
+	if sd != m.picking.side {
+		return base.Faint(true), ""
+	}
+	return base, ""
 }
 
 // pendingSuffixWidth is the width listingSuffix's widest frame (" ...")
@@ -244,8 +270,10 @@ func (m Model) renderRootParentRow(leftWidth, rightWidth int) (left, gutter, rig
 		rightBudget -= pendingSuffixWidth
 	}
 
-	left = cursorStyle.Render(style.Render(truncate(m.rootRowLabel(diffmodel.Left)+"/", leftBudget)))
-	right = cursorStyle.Render(style.Render(truncate(m.rootRowLabel(diffmodel.Right)+"/", rightBudget)))
+	leftStyle, leftPick := m.sideStyle(root, diffmodel.Left, style)
+	rightStyle, rightPick := m.sideStyle(root, diffmodel.Right, style)
+	left = cursorStyle.Render(leftStyle.Render(leftPick + truncate(m.rootRowLabel(diffmodel.Left)+"/", leftBudget-len([]rune(leftPick)))))
+	right = cursorStyle.Render(rightStyle.Render(rightPick + truncate(m.rootRowLabel(diffmodel.Right)+"/", rightBudget-len([]rune(rightPick)))))
 	left += listingSuffix(pendingLeft, m.spinnerFrame)
 	right += listingSuffix(pendingRight, m.spinnerFrame)
 	return left, cursorStyle.Render(style.Render(glyph)), right
@@ -664,10 +692,15 @@ func (m Model) renderStatusBar() string {
 	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s | scan workers: %d | compare workers: %d]",
 		compareLevelLabel(m.compareLevel), recursiveLabel, filterSetLabel(m.filter), m.sess.ListWorkers(), m.sess.CompareWorkers())
 
-	// The note takes the hint line rather than a line of its own: the
-	// panel's height has to stay fixed, and whatever just went wrong is
-	// more use than the keybindings for a moment.
-	last := dimStyle.Render("↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare row · C compare dir · [ ] mark · p pair · n/N diff · x cancel · ? help · q quit")
+	// The last line is the keybinding hint, displaced by the selection
+	// prompt while one is running and by a note when there is one — all
+	// on the one line, because the panel's height has to stay fixed, and
+	// in that order of precedence: what just went wrong beats what to do
+	// next, which beats the general reference.
+	last := dimStyle.Render("↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare row · C compare dir · p sub-compare · n/N diff · x cancel · ? help · q quit")
+	if m.picking != nil {
+		last = pendingStyle.Render("Space choose · →/Enter go in · ←/Backspace up · Esc cancel")
+	}
 	if m.note != "" {
 		last = pendingStyle.Render(m.note)
 	}
@@ -676,17 +709,17 @@ func (m Model) renderStatusBar() string {
 		pendingStyle.Render(settings) + "\n" + truncate(last, m.width)
 }
 
-// whereLabel says which pairing is on screen and what marks are waiting,
-// when either is worth saying: the root pairing with nothing marked is
-// the ordinary case and says nothing at all.
+// whereLabel says which pairing is on screen and how a sub-compare
+// selection is going, when either is worth saying: the root pairing with
+// nothing being chosen is the ordinary case and says nothing at all.
 func (m Model) whereLabel() string {
 	var parts []string
 	if len(m.stack) > 0 {
 		parts = append(parts, fmt.Sprintf("sub-compare: %s ↔ %s",
 			m.rootRowLabel(diffmodel.Left), m.rootRowLabel(diffmodel.Right)))
 	}
-	if marks := m.marksLabel(); marks != "" {
-		parts = append(parts, marks)
+	if sel := m.selectionLabel(); sel != "" {
+		parts = append(parts, sel)
 	}
 	if len(parts) == 0 {
 		return ""
@@ -694,24 +727,28 @@ func (m Model) whereLabel() string {
 	return "[" + strings.Join(parts, " | ") + "]"
 }
 
-func (m Model) marksLabel() string {
-	if m.markLeft == nil && m.markRight == nil {
+// selectionLabel is the running account of a sub-compare being chosen:
+// which side Space would take now, and what the first choice was. It's
+// the authoritative record of that choice, since the directory itself is
+// usually off screen by the time the second one is being hunted for.
+func (m Model) selectionLabel() string {
+	if m.picking == nil {
 		return ""
 	}
-	return fmt.Sprintf("marked: %s ↔ %s (p to pair)", markLabel(m.markLeft), markLabel(m.markRight))
+	if m.picking.left == nil {
+		return "choose the LEFT directory"
+	}
+	return fmt.Sprintf("left: %s %s · choose the RIGHT directory",
+		pickedGlyph, pickedPathLabel(m.picking.left))
 }
 
-// markLabel names a marked directory by its path below its own root,
-// which is what distinguishes two marks that share a basename.
-func markLabel(n *sidetree.Node) string {
-	switch {
-	case n == nil:
-		return "–"
-	case n.RelPath == "":
+// pickedPathLabel names a chosen directory by its path below its own
+// root, which is what tells two candidates sharing a basename apart.
+func pickedPathLabel(n *sidetree.Node) string {
+	if n.RelPath == "" {
 		return "/"
-	default:
-		return n.RelPath
 	}
+	return n.RelPath
 }
 
 func helpView() string {
@@ -729,8 +766,9 @@ func helpView() string {
 		"w              open worker-count popup: scan / compare pool size, Enter to type a new value",
 		"c              compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or whole subtree, with r)",
 		"C              compare the current directory the same way, whatever the cursor is on and whatever the filter hides",
-		"[ / ]          mark the selected row's left / right side as one end of a sub-compare (marks survive navigating anywhere)",
-		"p              pair the two marks: compare those directories against each other, whatever their paths — ← past the top row leaves again",
+		"p              start a sub-compare: choose a left directory, then a right one, and they're compared against each other whatever their paths",
+		"                 while choosing — Space takes the highlighted directory, →/Enter and ← navigate as usual, Esc (or p) cancels",
+		"                 ← past the top row of a sub-compare leaves it again",
 		"n / N          jump to next / previous difference",
 		"x              cancel all pending (not yet started) comparisons",
 		"?              toggle this help",
@@ -741,6 +779,7 @@ func helpView() string {
 		missingStyle.Render("  ←") + " only on left" + "  " + missingStyle.Render("→") + " only on right  " + dimStyle.Render("?") + " not yet compared",
 		pendingStyle.Render("  ⠋") + " comparing: file or directory subtree, gutter (animated)",
 		pendingStyle.Render("  name...") + " directory: listing pending on that side, next to the name (animated)",
+		pickedStyle.Render("  "+pickedGlyph+"name") + " directory chosen as one end of a sub-compare",
 		"",
 		dimStyle.Render("press ? or esc to close"),
 	}

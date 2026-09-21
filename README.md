@@ -83,8 +83,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | `w` | Open the worker-count popup — resize the scan/compare pools live |
 | `c` | Compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or its whole subtree, with `r` on) |
 | `C` | Compare the current directory the same way, whatever the cursor is on and whatever the filter hides |
-| `[` / `]` | Mark the selected row's left / right side as one end of a sub-compare |
-| `p` | Pair the two marks — compare those two directories against each other, whatever their paths |
+| `p` | Start a sub-compare — choose a left directory, then a right one, and they're compared against each other whatever their paths (`Space` chooses, `Esc` cancels) |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
 | `x` | Cancel all pending (not yet started) comparisons |
 | `?` | Toggle the help overlay |
@@ -104,21 +103,29 @@ answers that — pick the two directories and compare them against each
 other directly, whatever their paths.
 
 Both panes always navigate together, so you're never standing in two
-unrelated directories at once. Instead you mark one side at a time:
+unrelated directories at once. Instead you choose one side at a time:
 
-1. Move to the old path and press `[` to mark its **left** side.
-2. Go find the new path — anywhere in either tree — and press `]` to mark
-   its **right** side.
-3. Press `p`.
+1. Press `p`. The status bar asks for the **left** directory.
+2. Move to the old path — `↑`/`↓` to move, `→`/`Enter` to go in, `←` to
+   go back up, all exactly as usual — and press `Space` to choose it.
+3. Go find the new path, anywhere in either tree, and press `Space`
+   again. The sub-compare opens.
 
-The status bar shows what's marked as you go. The sub-compare opens as an
-ordinary view — same panes, same glyphs, same keys — with each pane
-titled by its own real path, which is the only visible difference.
-Press `←` past its top row to leave again. Sub-compares nest: `p` from
-inside one opens another, and `←` comes back to the one you came from.
+`Esc` (or `p` again) cancels and puts you back where you started. While
+you're choosing, the side you're not choosing from fades, and the
+directory you already picked is marked `▸` wherever it's on screen — the
+status bar names it the rest of the time, since it's usually scrolled
+away by the time you've found its counterpart.
 
-Marks point at directories, not at rows, so they survive navigating
-anywhere in between. Both must be directories.
+The sub-compare opens as an ordinary view — same panes, same glyphs, same
+keys — with each pane titled by its own real path, which is the only
+visible difference. Press `←` past its top row to leave again.
+Sub-compares nest: `p` from inside one opens another, and `←` comes back
+to the one you came from.
+
+Both sides must be directories; a row that doesn't exist on the side
+you're choosing can't be picked, and the status bar says so without
+dropping you out of the selection.
 
 A sub-compare costs nothing over subtrees already scanned: listing and
 size/date metadata are read per side and shared, so all that's built is

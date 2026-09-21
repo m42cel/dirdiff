@@ -4,7 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/m42cel/dirdiff/internal/diffmodel"
+	"github.com/m42cel/dirdiff/internal/pairtree"
 	"github.com/m42cel/dirdiff/internal/session"
 )
 
@@ -37,41 +40,46 @@ func selectRow(t *testing.T, m Model, name string) Model {
 	return m
 }
 
-// markPair marks the two named rows and pairs them.
-func markPair(t *testing.T, m Model, leftName, rightName string) Model {
+// subCompare runs the whole flow: p, choose the left directory, choose
+// the right one.
+func subCompare(t *testing.T, m Model, leftName, rightName string) Model {
 	t.Helper()
+	m = press(t, m, "p")
 	m = selectRow(t, m, leftName)
-	m = press(t, m, "[")
+	m = press(t, m, " ")
 	m = selectRow(t, m, rightName)
-	m = press(t, m, "]")
-	return press(t, m, "p")
+	return press(t, m, " ")
 }
 
-// The whole flow (SPEC.md §4.9): mark one side, move the cursor, mark
-// the other, pair them.
-func TestMarkBothSidesAndPair(t *testing.T) {
+// The whole flow (SPEC.md §4.9): p, choose one side, move the cursor,
+// choose the other.
+func TestChooseBothSidesAndPair(t *testing.T) {
 	m, _ := movedModel(t)
 
-	m = selectRow(t, m, "old-name")
-	m = press(t, m, "[")
-	m = selectRow(t, m, "new-name")
-	m = press(t, m, "]")
-	if m.markLeft == nil || m.markLeft.RelPath != "old-name" {
-		t.Fatalf("left mark = %v; want old-name", m.markLeft)
-	}
-	if m.markRight == nil || m.markRight.RelPath != "new-name" {
-		t.Fatalf("right mark = %v; want new-name", m.markRight)
+	m = press(t, m, "p")
+	if m.picking == nil || m.picking.side != diffmodel.Left {
+		t.Fatal("p should start a selection, on the left side first")
 	}
 
-	m = press(t, m, "p")
+	m = selectRow(t, m, "old-name")
+	m = press(t, m, " ")
+	if m.picking == nil || m.picking.side != diffmodel.Right {
+		t.Fatal("choosing the left directory should move on to the right side")
+	}
+	if m.picking.left == nil || m.picking.left.RelPath != "old-name" {
+		t.Fatalf("left choice = %v; want old-name", m.picking.left)
+	}
+
+	m = selectRow(t, m, "new-name")
+	m = press(t, m, " ")
+	if m.picking != nil {
+		t.Fatal("the selection should be over once both sides are chosen")
+	}
 	if len(m.stack) != 1 {
-		t.Fatalf("view stack depth = %d; want 1 — p should have pushed a sub-compare", len(m.stack))
+		t.Fatalf("view stack depth = %d; want 1 — the second choice should have pushed a sub-compare", len(m.stack))
 	}
 	if m.pairing == session.RootPairing {
-		t.Fatal("still showing the root pairing after p")
-	}
-	if m.markLeft != nil || m.markRight != nil {
-		t.Error("the marks should be cleared once they've been paired")
+		t.Fatal("still showing the root pairing after choosing both sides")
 	}
 
 	// Inside it, the two differently-named directories' contents pair up.
@@ -87,32 +95,49 @@ func TestMarkBothSidesAndPair(t *testing.T) {
 	}
 }
 
-// A mark points at a side node, not a row, so it survives navigating
-// anywhere at all between the two keypresses.
-func TestMarksSurviveNavigation(t *testing.T) {
+// The mode adds a key rather than rebinding any: →/Enter and ← navigate
+// exactly as they do outside it, which is how you get to a directory
+// that isn't in the listing you started from.
+func TestNavigationWorksUnchangedWhileChoosing(t *testing.T) {
 	m, _ := movedModel(t)
 
+	m = press(t, m, "p")
 	m = selectRow(t, m, "old-name")
-	m = press(t, m, "[")     // mark old-name on the left
-	m = press(t, m, "right") // descend into it
-	m = press(t, m, "left")  // and back out
-	m = press(t, m, "left")  // up past the roots
-	if m.markLeft == nil || m.markLeft.RelPath != "old-name" {
-		t.Fatalf("left mark = %v after navigating away and back; want it kept", m.markLeft)
+	for _, key := range []string{"right", "enter"} {
+		into := press(t, m, key)
+		if into.cursorDir.Name() != "old-name" {
+			t.Fatalf("%s while choosing left cursorDir at %q; want to have descended into old-name", key, into.cursorDir.Name())
+		}
+		if into.picking == nil || into.picking.left != nil {
+			t.Fatalf("%s while choosing should navigate, not choose", key)
+		}
+	}
+
+	// And the choice can then be made further down.
+	m = press(t, m, "right")
+	m = selectRow(t, m, "nested")
+	m = press(t, m, " ")
+	if m.picking.left == nil || m.picking.left.RelPath != "old-name/nested" {
+		t.Fatalf("left choice = %v; want the directory navigated to", m.picking.left)
 	}
 }
 
-func TestMarkingASideThatIsntThere(t *testing.T) {
+func TestChoosingASideThatIsntThere(t *testing.T) {
 	m, _ := movedModel(t)
 
-	// old-name is left-only, so it has no right side to mark.
-	m = selectRow(t, m, "old-name")
-	m = press(t, m, "]")
-	if m.markRight != nil {
-		t.Fatalf("right mark = %v; want none — the row doesn't exist on the right", m.markRight)
+	// old-name is left-only, so it can't be the right-hand side.
+	m = press(t, m, "p")
+	m = selectRow(t, m, "new-name")
+	m = press(t, m, " ") // fine: new-name is right-only, but we want its left…
+	if m.picking.left != nil {
+		t.Fatal("a right-only row has no left side to choose")
 	}
-	if !strings.Contains(m.note, "right") {
-		t.Errorf("note = %q; want it to say the row isn't on the right", m.note)
+	if !strings.Contains(m.note, "left") {
+		t.Errorf("note = %q; want it to say the row isn't on the left", m.note)
+	}
+	// The selection stays open, so the next candidate is one keypress away.
+	if m.picking == nil || m.picking.side != diffmodel.Left {
+		t.Fatal("a refused choice should leave the selection running")
 	}
 
 	// And the note lasts exactly until the next keypress.
@@ -122,30 +147,44 @@ func TestMarkingASideThatIsntThere(t *testing.T) {
 	}
 }
 
-func TestPairingWithoutTwoMarksIsANoOp(t *testing.T) {
-	m, _ := movedModel(t)
-
-	m = selectRow(t, m, "old-name")
-	m = press(t, m, "[")
-	m = press(t, m, "p")
-	if len(m.stack) != 0 {
-		t.Fatal("p opened a pairing with only one mark set")
-	}
-	if m.note == "" {
-		t.Error("p with only one mark should say why it did nothing")
-	}
-}
-
-func TestMarkingAFileIsRefused(t *testing.T) {
+func TestChoosingAFileIsRefused(t *testing.T) {
 	m, sess := newTestModel(t)
 	listBoth(sess, "", "a.txt")
 
-	m = press(t, m, "[")
-	if m.markLeft != nil {
-		t.Fatalf("left mark = %v; want none — a sub-compare pairs directories", m.markLeft)
+	m = press(t, m, "p")
+	m = press(t, m, " ")
+	if m.picking.left != nil {
+		t.Fatal("a sub-compare pairs directories, not files")
 	}
 	if !strings.Contains(m.note, "directories") {
-		t.Errorf("note = %q; want it to say why a file can't be marked", m.note)
+		t.Errorf("note = %q; want it to say why a file can't be chosen", m.note)
+	}
+}
+
+// Esc abandons the selection and puts the view back where p was pressed,
+// since navigating around to find a directory was incidental to an
+// operation that didn't happen.
+func TestCancellingRestoresWhereItStarted(t *testing.T) {
+	for _, key := range []string{"esc", "p"} {
+		m, _ := movedModel(t)
+		m = selectRow(t, m, "new-name")
+		startIdx := m.cursorIdx
+
+		m = press(t, m, "p")
+		m = selectRow(t, m, "old-name")
+		m = press(t, m, " ")
+		m = press(t, m, "right") // wander off into the chosen directory
+
+		m = press(t, m, key)
+		if m.picking != nil {
+			t.Fatalf("%s should cancel the selection", key)
+		}
+		if m.cursorDir != m.root || m.cursorIdx != startIdx {
+			t.Errorf("%s left the cursor at %q/%d; want it back where the selection started", key, m.cursorDir.Name(), m.cursorIdx)
+		}
+		if len(m.stack) != 0 {
+			t.Errorf("%s opened a pairing", key)
+		}
 	}
 }
 
@@ -154,7 +193,8 @@ func TestMarkingAFileIsRefused(t *testing.T) {
 func TestLeavingASubCompareReturnsAndClosesIt(t *testing.T) {
 	m, sess := movedModel(t)
 
-	m = markPair(t, m, "old-name", "new-name")
+	m = selectRow(t, m, "new-name")
+	m = subCompare(t, m, "old-name", "new-name")
 	sub := m.pairing
 	m = selectRow(t, m, "nested")
 	m = press(t, m, "right") // into "nested"
@@ -175,10 +215,36 @@ func TestLeavingASubCompareReturnsAndClosesIt(t *testing.T) {
 	if _, ok := sess.Pairing(sub); ok {
 		t.Error("the sub-compare is still open after being left; it should be dropped")
 	}
-	// The cursor is back where it was, on the row that was selected when
-	// the sub-compare was opened.
+	// The origin goes on the stack, not wherever the hunt for the second
+	// directory ended, so this lands where the whole operation started.
 	if got := m.visibleChildren()[m.cursorIdx].Name(); got != "new-name" {
-		t.Errorf("cursor is on %q; want new-name, the row it was left on", got)
+		t.Errorf("cursor is on %q; want new-name, the row the selection started from", got)
+	}
+}
+
+// Leaving the pairing mid-choice would close the view the selection
+// started in, so it's refused until the selection is finished or dropped.
+func TestLeavingIsRefusedWhileChoosing(t *testing.T) {
+	m, _ := movedModel(t)
+	m = subCompare(t, m, "old-name", "new-name")
+	sub := m.pairing
+
+	m = press(t, m, "p")
+	m = press(t, m, "left") // up to the pair row
+	m = press(t, m, "left") // and would leave
+	if m.pairing != sub {
+		t.Fatal("left out of a sub-compare while choosing should be refused")
+	}
+	if m.note == "" {
+		t.Error("a refused exit should say why")
+	}
+
+	// Cancelling first makes the way out work as usual.
+	m = press(t, m, "esc")
+	m = press(t, m, "left")
+	m = press(t, m, "left")
+	if m.pairing != session.RootPairing {
+		t.Fatal("left should leave the sub-compare once the selection is cancelled")
 	}
 }
 
@@ -197,16 +263,16 @@ func TestLeavingTheRootPairingStaysPut(t *testing.T) {
 	}
 }
 
-// Sub-compares nest: p from inside one pushes another, and ← pops back
+// Sub-compares nest: p from inside one opens another, and ← pops back
 // to the one it was opened from rather than all the way out.
 func TestSubComparesNest(t *testing.T) {
 	m, _ := movedModel(t)
 
-	m = markPair(t, m, "old-name", "new-name")
+	m = subCompare(t, m, "old-name", "new-name")
 	outer := m.pairing
 
 	// Inside it, pair "nested" with itself — any two directories will do.
-	m = markPair(t, m, "nested", "nested")
+	m = subCompare(t, m, "nested", "nested")
 	if len(m.stack) != 2 {
 		t.Fatalf("stack depth = %d; want 2 — a sub-compare opened from inside a sub-compare", len(m.stack))
 	}
@@ -227,7 +293,7 @@ func TestSubComparePaneTitlesShowEachSidesRealPath(t *testing.T) {
 	m, sess := movedModel(t)
 	m.width = 400
 
-	m = markPair(t, m, "old-name", "new-name")
+	m = subCompare(t, m, "old-name", "new-name")
 
 	if got, want := m.paneTitle(diffmodel.Left), sess.LeftRoot+"/old-name"; got != want {
 		t.Errorf("left pane title = %q; want %q", got, want)
@@ -244,30 +310,92 @@ func TestSubComparePaneTitlesShowEachSidesRealPath(t *testing.T) {
 	}
 }
 
-// The status bar has to say when the view isn't the ordinary one, and
-// what's waiting to be paired.
-func TestStatusBarShowsMarksAndSubCompare(t *testing.T) {
+// The status bar has to say which side Space would take, and keep the
+// first choice visible once it's off screen.
+func TestStatusBarFollowsTheSelection(t *testing.T) {
 	m, _ := movedModel(t)
 	m.width = 400
 
 	if got := m.whereLabel(); got != "" {
-		t.Errorf("where label = %q at the root pairing with nothing marked; want nothing said", got)
+		t.Errorf("where label = %q at the root pairing with nothing being chosen; want nothing said", got)
+	}
+
+	m = press(t, m, "p")
+	if got := m.whereLabel(); !strings.Contains(got, "LEFT") {
+		t.Errorf("where label = %q; want it to say which side is being chosen", got)
 	}
 
 	m = selectRow(t, m, "old-name")
-	m = press(t, m, "[")
-	if got := m.whereLabel(); !strings.Contains(got, "old-name") || !strings.Contains(got, "p to pair") {
-		t.Errorf("where label = %q; want the pending mark and how to use it", got)
+	m = press(t, m, " ")
+	got := m.whereLabel()
+	if !strings.Contains(got, "old-name") || !strings.Contains(got, "RIGHT") {
+		t.Errorf("where label = %q; want the choice made and the side still to go", got)
 	}
 
 	m = selectRow(t, m, "new-name")
-	m = press(t, m, "]")
-	m = press(t, m, "p")
-	got := m.whereLabel()
+	m = press(t, m, " ")
+	got = m.whereLabel()
 	if !strings.Contains(got, "sub-compare") || !strings.Contains(got, "old-name ↔ new-name") {
 		t.Errorf("where label = %q; want a breadcrumb naming the two paired directories", got)
 	}
-	if strings.Contains(got, "p to pair") {
-		t.Error("the marks should be gone from the status bar once they're paired")
+	if strings.Contains(got, "choose") {
+		t.Error("the selection prompt should be gone once the pairing is open")
+	}
+}
+
+// The already-chosen directory is marked where it's visible, and the
+// side not being chosen fades — both only while a selection is running.
+func TestChosenDirectoryIsMarkedAndTheOtherSideFades(t *testing.T) {
+	// Two both-sided directories, so each row has a left cell and a right
+	// cell to compare against each other.
+	m, sess := newTestModel(t)
+	listBoth(sess, "", "a/", "b/")
+
+	row := func(m Model, name string) (string, string) {
+		m = selectRow(t, m, name)
+		n := m.visibleChildren()[m.cursorIdx]
+		left, _, right := m.renderRowTriple(n, false, false, 40, 40)
+		return left, right
+	}
+
+	if left, _ := row(m, "a"); strings.Contains(left, pickedGlyph) {
+		t.Errorf("left = %q outside a selection; want no choice marker", left)
+	}
+
+	m = press(t, m, "p")
+	m = selectRow(t, m, "a")
+	m = press(t, m, " ")
+
+	if left, _ := row(m, "a"); !strings.Contains(left, pickedGlyph) {
+		t.Errorf("left = %q; want the chosen directory marked out", left)
+	}
+
+	// The fading has to be read off the style rather than the rendered
+	// string: lipgloss strips styling when it renders without a TTY, as
+	// it does under `go test`, so the escape codes never reach the output
+	// here.
+	rowOf := func(m Model, name string) *pairtree.Node {
+		m = selectRow(t, m, name)
+		return m.visibleChildren()[m.cursorIdx]
+	}
+	base := lipgloss.NewStyle()
+
+	// The left column is no longer the one being chosen from, so a row
+	// that isn't the choice fades there — but the choice itself doesn't,
+	// since the whole point of marking it is that it stays findable.
+	if st, _ := m.sideStyle(rowOf(m, "b"), diffmodel.Left, base); !st.GetFaint() {
+		t.Error("the side not being chosen should fade")
+	}
+	if st, _ := m.sideStyle(rowOf(m, "b"), diffmodel.Right, base); st.GetFaint() {
+		t.Error("the side being chosen should stay undimmed")
+	}
+	if st, _ := m.sideStyle(rowOf(m, "a"), diffmodel.Left, base); st.GetFaint() {
+		t.Error("the already-chosen directory should be marked out, not faded with its column")
+	}
+
+	// And none of it applies once the selection is over.
+	m = press(t, m, "esc")
+	if st, prefix := m.sideStyle(rowOf(m, "a"), diffmodel.Left, base); st.GetFaint() || prefix != "" {
+		t.Error("no fading or choice marker should survive the selection")
 	}
 }

@@ -377,16 +377,29 @@ whether the contents match. A **sub-compare** is a second comparison view
 pairing those two subtrees — rendered exactly like the main one, with the
 same panes, glyphs, details panel and keys.
 
-**Marking.** The panes navigate in lockstep (§4.1), so there is no moment
-at which the cursor stands in two unrelated directories — which is what
-choosing a pairing would otherwise require. Instead one side is marked at
-a time, from wherever you happen to be: `[` marks the selected row's left
-side, `]` its right, and `p` pairs the two marks. A mark points at a
-directory in one side's tree, not at a row, so it survives navigating
-anywhere and any change of pairing. Marking a side a row doesn't have, or
-anything but a directory, is a no-op with a note in the status bar
-(pairing two files would be a one-row view of no value). The row above
-the pairing (§4.3.1) is markable too, so a whole root can be one half.
+**Choosing.** The panes navigate in lockstep (§4.1), so there is no
+moment at which the cursor stands in two unrelated directories — which is
+what choosing a pairing would otherwise require. Instead one side is
+chosen at a time: `p` starts a selection, `Space` takes the directory
+under the cursor for the side currently being chosen, and the second
+choice opens the pairing. `Esc` — or `p` again — cancels, restoring the
+view to where `p` was pressed, since navigating around to find a
+directory was incidental to an operation that didn't happen.
+
+The selection **adds** a key rather than rebinding any: every movement
+key, `→`/`Enter` to descend included, means exactly what it means outside
+the mode. That is how a directory outside the current listing is reached
+— one-sided directories are navigable (§4.3), so lockstep navigation
+reaches every directory in either tree — and it means there is nothing to
+unlearn on the way in or out and no way to confirm a choice by reflex.
+
+Choosing a side a row doesn't have, or anything but a directory, is a
+no-op with a note in the status bar (pairing two files would be a one-row
+view of no value); the selection stays open so the next candidate is one
+keypress away. The row above the pairing (§4.3.1) can be chosen too, so a
+whole root can be one half. Leaving the pairing entirely (§4.3.1's `←`)
+is refused while a selection is running, since it would close the very
+view the selection started in.
 
 **The stack.** `p` pushes the new pairing; `←` past its top row (§4.3.1)
 pops back to whichever view it was opened from. Sub-compares nest: `p`
@@ -413,8 +426,18 @@ everything except bytes you had asked to read.
 
 **Rendering.** Each pane's path title shows that side's own real path,
 which under a sub-compare simply diverge. The status bar names the
-pairing while one is open, and names the pending marks while they're
-being set.
+pairing while one is open.
+
+While a selection is running, the side **not** currently being chosen is
+faded, shifting the eye to the column the choice is coming from, and the
+status bar says which side `Space` would take. The directory already
+chosen is marked with its own glyph and color (§6's never-color-alone
+rule applies to it as much as to a status) wherever it is on screen, and
+that marking wins over the fade — the point of it is that it stays
+findable. Since it is usually scrolled out of sight by the time its
+counterpart is being hunted for, the status bar carries it too, named by
+its path below its own root so two candidates sharing a basename are
+told apart.
 
 ## 5. Comparison levels and triggering
 
@@ -662,8 +685,9 @@ plus the full reference via `?` (§4.5).
 | `w` | Open the worker-count popup: resize the scan/compare pools live (§4.8) |
 | `c` | Compare the selected row at the current level/recursive setting |
 | `C` | Compare the current directory at the current level/recursive setting |
-| `[` / `]` | Mark the selected row's left / right side as one end of a sub-compare (§4.9) |
-| `p` | Open a sub-compare of the two marks (§4.9) |
+| `p` | Start choosing a sub-compare; while choosing, cancel it (§4.9) |
+| `Space` | While choosing a sub-compare, take the highlighted directory for the side being chosen (§4.9) |
+| `Esc` | While choosing a sub-compare, cancel (§4.9) |
 | `n` / `N` | Jump to next / previous entry in the current directory whose status isn't "same" (only considers entries already compared at some level) |
 | `X` / `Esc` | Cancel/clear all pending (not-yet-started) queued comparison jobs |
 | `?` | Toggle full keybinding help overlay |

@@ -45,6 +45,12 @@ var (
 	// grey, not just italicized.
 	placeholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true).Italic(true)
 
+	// pickedStyle marks the directory already chosen as one end of a
+	// sub-compare (SPEC.md §4.9), in a bright cyan no status uses — and
+	// paired with its own glyph (pickedGlyph), the same never-color-alone
+	// rule §6 imposes on statuses.
+	pickedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+
 	statusBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 	detailsStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("7")).BorderStyle(lipgloss.NormalBorder()).BorderTop(true)
 

@@ -278,16 +278,22 @@ func TestClosePairingLeavesOtherWorkAlone(t *testing.T) {
 	s.TriggerCompare(idA, pA.Root, diffmodel.SizeMtime, true)
 	s.TriggerCompare(idB, pB.Root, diffmodel.SizeMtime, true)
 
-	pendingBefore := s.Stats().CmpPending
-	if pendingBefore == 0 {
-		t.Fatal("no metadata work queued; the test needs some to survive the close")
+	// Read the outstanding metadata off the side trees rather than off
+	// the queue: a worker is draining the queue the whole time, but a
+	// pending-stat count only moves when a result is applied — which
+	// nothing here does — or when the work is cancelled, which is exactly
+	// what this test is about.
+	leftBefore, rightBefore := s.Tree().PendingStat()
+	if leftBefore == 0 || rightBefore == 0 {
+		t.Fatal("no metadata work outstanding; the test needs some to survive the close")
 	}
 	s.ClosePairing(idA)
 
 	// Metadata jobs are keyed by side, not by pairing, so closing one
-	// pairing drops none of them.
-	if got := s.Stats().CmpPending; got != pendingBefore {
-		t.Fatalf("CmpPending = %d after closing one pairing; want the %d shared metadata jobs untouched", got, pendingBefore)
+	// pairing retires none of them.
+	if l, r := s.Tree().PendingStat(); l != leftBefore || r != rightBefore {
+		t.Fatalf("PendingStat = %d/%d after closing one pairing; want the shared %d/%d metadata jobs untouched",
+			l, r, leftBefore, rightBefore)
 	}
 	if _, ok := s.Pairing(idB); !ok {
 		t.Fatal("the other pairing was closed too")

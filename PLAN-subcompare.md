@@ -218,7 +218,7 @@ What's new:
   statted, its `SizeMtime` verdict is an equality test over values already in
   the side trees — no job, no I/O, and the same answer in every pairing. A
   symlink compares its two `LinkTarget`s the same way. Monotonicity (§5.3)
-  still applies: a stored `Checksum` result outranks it.
+  still applies: a stored `Content` result outranks it.
 
 **Merge gating.** `n`'s children are created only once every side `n`
 actually has is `Listed`. The alternative — show the left side's entries

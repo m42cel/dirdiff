@@ -69,7 +69,7 @@ func TestCompareResultMovesTallyBetweenStatuses(t *testing.T) {
 
 	// A deeper level overriding a shallower verdict moves the row from
 	// one status to the other, not into both.
-	ApplyCompareResult(file, diffmodel.Checksum, diffmodel.Differs, nil)
+	ApplyCompareResult(file, diffmodel.Content, diffmodel.Differs, nil)
 	for _, n := range []*Node{sub, f.root} {
 		if got := n.DescendantsWithStatus(diffmodel.RowEqual); got != 0 {
 			t.Errorf("%q equal tally = %d; want 0 once the row differs", n.PairRel, got)
@@ -86,7 +86,7 @@ func TestStaleCompareResultLeavesTalliesAlone(t *testing.T) {
 	f.list(f.root, bothF("f.txt"))
 	file := f.find("f.txt")
 
-	ApplyCompareResult(file, diffmodel.Checksum, diffmodel.Differs, nil)
+	ApplyCompareResult(file, diffmodel.Content, diffmodel.Differs, nil)
 	// Shallower, stale result: a no-op on Result (SPEC.md §5.3), so it
 	// must be a no-op on the tallies too.
 	ApplyCompareResult(file, diffmodel.SizeMtime, diffmodel.Same, nil)
@@ -159,7 +159,7 @@ func TestTalliesSurviveRandomMutationSequence(t *testing.T) {
 
 	presences := []diffmodel.Presence{diffmodel.Both, diffmodel.Both, diffmodel.LeftOnly, diffmodel.RightOnly}
 	results := []diffmodel.CompareResult{diffmodel.Same, diffmodel.Differs, diffmodel.CompareError}
-	levels := []diffmodel.CompareLevel{diffmodel.SizeMtime, diffmodel.Checksum}
+	levels := []diffmodel.CompareLevel{diffmodel.SizeMtime, diffmodel.Content}
 
 	for step := 0; step < 400 && (len(unlisted) > 0 || len(files) > 0); step++ {
 		// Interleave the two kinds of result the way the two worker

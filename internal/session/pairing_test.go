@@ -170,11 +170,11 @@ func TestRecursiveTriggerInASubPairingReachesLaterRows(t *testing.T) {
 		t.Fatal("the paired subtree is already listed; the trigger would have something to enqueue and the test would prove nothing")
 	}
 	s.Navigate(id, p.Root)
-	s.TriggerCompare(id, p.Root, diffmodel.Checksum, true)
+	s.TriggerCompare(id, p.Root, diffmodel.Content, true)
 
 	pump(t, s, 10*time.Second, func() bool {
 		n, ok := p.Row("nested/deep.txt")
-		return ok && n.Level == diffmodel.Checksum
+		return ok && n.Level == diffmodel.Content
 	})
 	n, _ := p.Row("nested/deep.txt")
 	if n.Result != diffmodel.Differs {
@@ -196,9 +196,9 @@ func TestContentVerdictsDoNotLeakBetweenPairings(t *testing.T) {
 
 	rowA, _ := pA.Row("same.txt")
 	rowB, _ := pB.Row("same.txt")
-	s.TriggerCompare(idA, rowA, diffmodel.Checksum, false)
+	s.TriggerCompare(idA, rowA, diffmodel.Content, false)
 
-	pump(t, s, 5*time.Second, func() bool { return rowA.Level == diffmodel.Checksum })
+	pump(t, s, 5*time.Second, func() bool { return rowA.Level == diffmodel.Content })
 	drainPending(t, s)
 
 	if rowA.Result != diffmodel.Same {
@@ -207,7 +207,7 @@ func TestContentVerdictsDoNotLeakBetweenPairings(t *testing.T) {
 	// Its metadata is shared and does reach the other pairing — that's
 	// the point of reading it per side — but the content verdict, which
 	// is a statement about a pair, does not.
-	if rowB.Level == diffmodel.Checksum {
+	if rowB.Level == diffmodel.Content {
 		t.Fatal("the other pairing's row got the content verdict too; a byte-for-byte result belongs to one pairing")
 	}
 }
@@ -239,7 +239,7 @@ func TestClosePairingDropsItsWorkAndItsLateResults(t *testing.T) {
 	s.TriggerCompare(id, p.Root, diffmodel.SizeMtime, true)
 	settle(t, s)
 
-	s.TriggerCompare(id, p.Root, diffmodel.Checksum, true)
+	s.TriggerCompare(id, p.Root, diffmodel.Content, true)
 	if p.Root.PendingCompare == 0 {
 		t.Fatal("no content jobs queued; there would be nothing for the close to drop")
 	}

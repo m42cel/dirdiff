@@ -95,7 +95,7 @@ func TestCompareKeysConsumeNeitherSetting(t *testing.T) {
 	m = press(t, m, "r") // recursive on -> off
 	for _, key := range []string{"c", "C"} {
 		m = press(t, m, key)
-		if m.compareLevel != diffmodel.Checksum || m.recursive {
+		if m.compareLevel != diffmodel.Content || m.recursive {
 			t.Fatalf("after %s: level=%v recursive=%v; want content/false to survive the trigger",
 				key, m.compareLevel, m.recursive)
 		}

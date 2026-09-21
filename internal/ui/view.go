@@ -648,7 +648,7 @@ func compareLevelLabel(level diffmodel.CompareLevel) string {
 	switch level {
 	case diffmodel.SizeMtime:
 		return "metadata"
-	case diffmodel.Checksum:
+	case diffmodel.Content:
 		return "content"
 	default:
 		return "none"

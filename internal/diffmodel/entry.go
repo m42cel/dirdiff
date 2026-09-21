@@ -47,13 +47,13 @@ const (
 //
 // There are only two triggered levels: SizeMtime (size AND mtime checked
 // together as one verdict — a file only counts as "same" at this level if
-// both match) and Checksum.
+// both match) and Content.
 type CompareLevel int
 
 const (
 	NotCompared CompareLevel = iota
 	SizeMtime
-	Checksum
+	Content
 )
 
 // CompareResult is the outcome of the deepest CompareLevel run so far.

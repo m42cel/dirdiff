@@ -73,8 +73,8 @@ func TestSymlinkVerdictComesFromTheTargetAtTheDeepestLevel(t *testing.T) {
 		if n.Result != c.want {
 			t.Errorf("%s: Result = %v; want %v — the differing mtimes must not decide it", c.name, n.Result, c.want)
 		}
-		if n.Level != diffmodel.Checksum {
-			t.Errorf("%s: Level = %v; want Checksum, since there is nothing deeper left to read", c.name, n.Level)
+		if n.Level != diffmodel.Content {
+			t.Errorf("%s: Level = %v; want Content, since there is nothing deeper left to read", c.name, n.Level)
 		}
 	}
 }
@@ -102,10 +102,10 @@ func TestContentVerdictSurvivesALaterMetadataVerdict(t *testing.T) {
 	f.list(f.root, bothF("f.txt"))
 	n := f.find("f.txt")
 
-	ApplyCompareResult(n, diffmodel.Checksum, diffmodel.Same, nil)
+	ApplyCompareResult(n, diffmodel.Content, diffmodel.Same, nil)
 	f.statBoth("f.txt", sidetree.Stat{Size: 10, Mtime: t1}, sidetree.Stat{Size: 10, Mtime: t2})
 
-	if n.Level != diffmodel.Checksum || n.Result != diffmodel.Same {
+	if n.Level != diffmodel.Content || n.Result != diffmodel.Same {
 		t.Fatalf("Level=%v Result=%v; want the content verdict kept, not replaced by differing mtimes", n.Level, n.Result)
 	}
 }

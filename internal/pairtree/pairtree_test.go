@@ -142,13 +142,13 @@ func TestMergeIsAdditive(t *testing.T) {
 	f := newFixture()
 	f.list(f.root, bothF("f.txt"))
 	f.trees[diffmodel.Left].ApplyListing(f.trees[diffmodel.Left].Root, []diffmodel.ListedEntry{{Name: "f.txt", Type: diffmodel.File}}, nil)
-	ApplyCompareResult(f.find("f.txt"), diffmodel.Checksum, diffmodel.Differs, nil)
+	ApplyCompareResult(f.find("f.txt"), diffmodel.Content, diffmodel.Differs, nil)
 
 	// Merging again must not replace the row and lose its verdict.
 	if added := Merge(f.root); len(added) != 0 {
 		t.Fatalf("Merge added %d rows on a second pass; want 0", len(added))
 	}
-	if got := f.find("f.txt"); got.Result != diffmodel.Differs || got.Level != diffmodel.Checksum {
+	if got := f.find("f.txt"); got.Result != diffmodel.Differs || got.Level != diffmodel.Content {
 		t.Fatalf("f.txt = %v at %v after re-merging; want its verdict kept", got.Result, got.Level)
 	}
 }
@@ -158,13 +158,13 @@ func TestApplyCompareResultMonotonic(t *testing.T) {
 	f.list(f.root, bothF("f.txt"))
 	n := f.find("f.txt")
 
-	ApplyCompareResult(n, diffmodel.Checksum, diffmodel.Differs, nil)
+	ApplyCompareResult(n, diffmodel.Content, diffmodel.Differs, nil)
 	// A shallower, stale result arriving afterward must not downgrade the
 	// display (SPEC.md §5.3).
 	ApplyCompareResult(n, diffmodel.SizeMtime, diffmodel.Same, nil)
 
-	if n.Level != diffmodel.Checksum || n.Result != diffmodel.Differs {
-		t.Fatalf("Level=%v Result=%v; want Checksum/Differs to survive the shallower re-trigger", n.Level, n.Result)
+	if n.Level != diffmodel.Content || n.Result != diffmodel.Differs {
+		t.Fatalf("Level=%v Result=%v; want Content/Differs to survive the shallower re-trigger", n.Level, n.Result)
 	}
 }
 
@@ -180,7 +180,7 @@ func TestRollupPropagatesUpwardOnDifference(t *testing.T) {
 		t.Fatalf("root.Result = %v before any compare; want Unknown", f.root.Result)
 	}
 
-	ApplyCompareResult(f.find("a/b/f.txt"), diffmodel.Checksum, diffmodel.Differs, nil)
+	ApplyCompareResult(f.find("a/b/f.txt"), diffmodel.Content, diffmodel.Differs, nil)
 
 	for _, n := range []*Node{f.find("a/b/f.txt"), b, a, f.root} {
 		if n.Result != diffmodel.Differs {
@@ -202,7 +202,7 @@ func TestRollupCleanWhenAllSame(t *testing.T) {
 	f := newFixture()
 	f.list(f.root, bothF("a.txt"), bothF("b.txt"))
 	for _, c := range f.root.Children {
-		ApplyCompareResult(c, diffmodel.Checksum, diffmodel.Same, nil)
+		ApplyCompareResult(c, diffmodel.Content, diffmodel.Same, nil)
 	}
 	if f.root.Result != diffmodel.Same {
 		t.Fatalf("root.Result = %v; want Same when every compared child is Same", f.root.Result)
@@ -256,10 +256,10 @@ func TestRollupLevelUniformAcrossChildren(t *testing.T) {
 	f := newFixture()
 	f.list(f.root, bothF("a.txt"), bothF("b.txt"))
 	for _, c := range f.root.Children {
-		ApplyCompareResult(c, diffmodel.Checksum, diffmodel.Same, nil)
+		ApplyCompareResult(c, diffmodel.Content, diffmodel.Same, nil)
 	}
-	if f.root.Level != diffmodel.Checksum || f.root.LevelMixed {
-		t.Fatalf("root.Level=%v LevelMixed=%v; want Checksum/false when every child was compared at the same level", f.root.Level, f.root.LevelMixed)
+	if f.root.Level != diffmodel.Content || f.root.LevelMixed {
+		t.Fatalf("root.Level=%v LevelMixed=%v; want Content/false when every child was compared at the same level", f.root.Level, f.root.LevelMixed)
 	}
 }
 
@@ -267,13 +267,13 @@ func TestRollupLevelMixedAcrossChildren(t *testing.T) {
 	f := newFixture()
 	f.list(f.root, bothF("a.txt"), bothF("b.txt"))
 	ApplyCompareResult(f.find("a.txt"), diffmodel.SizeMtime, diffmodel.Same, nil)
-	ApplyCompareResult(f.find("b.txt"), diffmodel.Checksum, diffmodel.Same, nil)
+	ApplyCompareResult(f.find("b.txt"), diffmodel.Content, diffmodel.Same, nil)
 
 	if !f.root.LevelMixed {
 		t.Fatal("root.LevelMixed = false; want true when children were compared at different levels")
 	}
-	if f.root.Level != diffmodel.Checksum {
-		t.Fatalf("root.Level = %v; want Checksum, the deepest level seen", f.root.Level)
+	if f.root.Level != diffmodel.Content {
+		t.Fatalf("root.Level = %v; want Content, the deepest level seen", f.root.Level)
 	}
 }
 
@@ -297,7 +297,7 @@ func TestRollupLevelPropagatesFromNestedDirectory(t *testing.T) {
 	a := f.find("a")
 	f.list(a, bothF("x.txt"), bothF("y.txt"))
 	ApplyCompareResult(f.find("a/x.txt"), diffmodel.SizeMtime, diffmodel.Same, nil)
-	ApplyCompareResult(f.find("a/y.txt"), diffmodel.Checksum, diffmodel.Same, nil)
+	ApplyCompareResult(f.find("a/y.txt"), diffmodel.Content, diffmodel.Same, nil)
 
 	if !a.LevelMixed {
 		t.Fatal("a.LevelMixed = false; want true")

@@ -64,7 +64,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | Flag | Description |
 |---|---|
 | `--level=<level>` | Auto-apply a comparison level (`metadata`, `content`, or `none`) to the whole tree recursively in the background as it's discovered, instead of comparing manually. Default: `metadata`. |
-| `--scan-workers=<n>` | Size of the directory-listing worker pool (default: `1` — listing is cheap, low-CPU I/O that doesn't benefit from scaling with core count). |
+| `--scan-workers=<n>` | Size of the directory-listing worker pool (default: `2` — one per side, since a listing job reads one side's directory; beyond that, listing is cheap, low-CPU I/O that doesn't benefit from scaling with core count). |
 | `--compare-workers=<n>` | Size of the comparison worker pool (default: number of CPUs). |
 | `--version` | Print version, commit, and platform, then exit. Released binaries report their tag (`dirdiff v1.0.0 (b1946ac92492, go1.27.1, darwin/arm64)`); builds made from a source checkout report `dev` plus the commit they came from, and a `go install`ed binary reports the module version it was installed at. |
 
@@ -76,12 +76,14 @@ dirdiff [flags] <left-dir> <right-dir>
 | `PgUp` / `PgDn` | Move by page |
 | `Home` / `End` | Jump to first / last entry |
 | `→` / `Enter` | Open the directory under the cursor (both panes navigate together) |
-| `←` / `Backspace` | Go up to the parent directory — at the root, up to both compared roots as a single row |
+| `←` / `Backspace` | Go up to the parent directory — at the root, up to both compared roots as a single row; past that in a sub-compare, back out of it |
 | `l` | Switch the compare level — metadata (size + mtime) ↔ content (byte-for-byte) — remembered until changed again |
 | `r` | Toggle recursive mode on/off — remembered, default on |
 | `f` | Open the row-status filter popup — multi-select Left-only / Right-only / Equal / Different, space to toggle, enter to confirm — remembered like `l`/`r` |
 | `w` | Open the worker-count popup — resize the scan/compare pools live |
-| `c` | Compare the current directory's files at the current level/recursive setting |
+| `c` | Compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or its whole subtree, with `r` on) |
+| `C` | Compare the current directory the same way, whatever the cursor is on and whatever the filter hides |
+| `s` | Start a sub-compare — choose a left directory, then a right one, and they're compared against each other whatever their paths (`Space` chooses, `Esc` cancels) |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
 | `x` | Cancel all pending (not yet started) comparisons |
 | `?` | Toggle the help overlay |
@@ -91,6 +93,47 @@ A directory that exists on only one side is still navigable — the
 missing side shows a static placeholder. Existence is shown as soon as a
 directory is listed; metadata/content comparisons only run once you
 trigger them with `c`.
+
+### Sub-compares: pairing two directories at different paths
+
+When a directory has been moved or renamed, it shows up twice and
+unhelpfully: left-only at the old path, right-only at the new one, with
+nothing to say whether the contents actually match. A **sub-compare**
+answers that — pick the two directories and compare them against each
+other directly, whatever their paths.
+
+Both panes always navigate together, so you're never standing in two
+unrelated directories at once. Instead you choose one side at a time:
+
+1. Press `s`. The status bar asks for the **left** directory.
+2. Move to the old path — `↑`/`↓` to move, `→`/`Enter` to go in, `←` to
+   go back up, all exactly as usual — and press `Space` to choose it.
+3. Go find the new path, anywhere in either tree, and press `Space`
+   again. The sub-compare opens.
+
+`Esc` (or `s` again) cancels and puts you back where you started. While
+you're choosing, the side you're not choosing from fades, and the
+directory you already picked is marked `▸` wherever it's on screen — the
+status bar names it the rest of the time, since it's usually scrolled
+away by the time you've found its counterpart.
+
+The sub-compare opens as an ordinary view — same panes, same glyphs, same
+keys — with each pane titled by its own real path, which is the only
+visible difference. Press `←` past its top row to leave again.
+Sub-compares nest: `s` from inside one opens another, and `←` comes back
+to the one you came from.
+
+Both sides must be directories; a row that doesn't exist on the side
+you're choosing can't be picked, and the status bar says so without
+dropping you out of the selection.
+
+A sub-compare costs nothing over subtrees already scanned: listing and
+size/date metadata are read per side and shared, so all that's built is
+the matching between them. Only byte-for-byte content results belong to a
+particular pairing — a verdict about *A vs B* says nothing about *A vs
+C* — which is why a sub-compare is dropped when you leave it, and why
+re-opening the same pair is instant for everything except content you'd
+asked to re-read.
 
 ### Directory totals
 
@@ -107,16 +150,17 @@ Sizes are shown in base-2 units (KiB, MiB, GiB, …), and a single file's
 size also names its exact byte count — the metadata level calls two files
 different on an exact size mismatch, which rounded units can hide.
 
-Size is never measured for its own sake: it's only ever the size a
-comparison had to read anyway, so `dirdiff` issues no extra `stat()` call
-just to total a directory. That means a file not yet compared — or one
-that exists on a single side, so there's nothing to compare it with —
-adds nothing to the total, and symlinks never do (comparing one reads its
-link target, not a file, which is why they're counted apart from files).
-While anything under a directory is still unsized the total reads as a
-lower bound with the sized count next to it (`≥1.4 MiB (12/40 files
+Size is never measured for its own sake: `dirdiff` issues no `stat()`
+call a comparison level didn't ask for. What it does measure, it measures
+per side — including entries that exist on one side only, which have
+nothing to be compared against but are still worth knowing the size of —
+so a total converges to the exact figure once the level you asked for has
+swept the subtree. Symlinks never contribute a size (comparing one reads
+its link target, not a file, which is why they're counted apart from
+files). While anything under a directory is still unsized the total reads
+as a lower bound with the sized count next to it (`≥1.4 MiB (12/40 files
 sized)`); when nothing under it is sized — as stays the case under
-`--level=none`, where nothing is ever compared — the size shows as `?`.
+`--level=none`, where nothing is ever measured — the size shows as `?`.
 
 Pressing `←` at the root goes up one more level, where the only row is
 the pair of compared directories themselves — select it to read the

@@ -23,88 +23,56 @@ func mustWrite(t *testing.T, path string, content string) {
 	}
 }
 
-func TestDoListMergesByNameAndType(t *testing.T) {
-	left := t.TempDir()
-	right := t.TempDir()
-
-	mustWrite(t, filepath.Join(left, "both.txt"), "x")
-	mustWrite(t, filepath.Join(right, "both.txt"), "x")
-
-	mustWrite(t, filepath.Join(left, "leftonly.txt"), "x")
-	mustWrite(t, filepath.Join(right, "rightonly.txt"), "x")
-
-	// "conflict" is a directory on the left and a file on the right — they
-	// must be matched independently (SPEC.md §3.1), not merged into one
-	// "type conflict" row.
-	mustMkdir(t, filepath.Join(left, "conflict"))
-	mustWrite(t, filepath.Join(right, "conflict"), "x")
-
-	res := DoList(ListJob{RelPath: "", LeftAbs: left, RightAbs: right})
-
-	if res.LeftErr != nil || res.RightErr != nil {
-		t.Fatalf("unexpected errors: left=%v right=%v", res.LeftErr, res.RightErr)
+func TestDoListReportsNamesAndTypes(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "f.txt"), "x")
+	mustMkdir(t, filepath.Join(dir, "sub"))
+	if err := os.Symlink("/target", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
 	}
 
-	got := map[string]diffmodel.Presence{}
-	gotType := map[string]diffmodel.EntryType{}
-	for _, c := range res.Children {
-		got[c.Name] = c.Presence
-		gotType[c.Name] = c.Type
+	res := DoList(ListJob{Side: diffmodel.Left, RelPath: "", Abs: dir})
+	if res.Err != nil {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if res.Side != diffmodel.Left {
+		t.Errorf("Side = %v; want Left — a result has to say which tree it came from", res.Side)
 	}
 
-	want := map[string]diffmodel.Presence{
-		"both.txt":      diffmodel.Both,
-		"leftonly.txt":  diffmodel.LeftOnly,
-		"rightonly.txt": diffmodel.RightOnly,
+	want := map[string]diffmodel.EntryType{
+		"f.txt": diffmodel.File,
+		"sub":   diffmodel.Dir,
+		// A symlink is classified as one without being followed (SPEC.md §7),
+		// even when it points at a directory or at nothing at all.
+		"link": diffmodel.Symlink,
 	}
-	for name, p := range want {
-		if got[name] != p {
-			t.Errorf("%s: Presence = %v; want %v", name, got[name], p)
+	got := map[string]diffmodel.EntryType{}
+	for _, e := range res.Entries {
+		got[e.Name] = e.Type
+	}
+	if len(got) != len(want) {
+		t.Fatalf("entries = %v; want %d of them", res.Entries, len(want))
+	}
+	for name, typ := range want {
+		if got[name] != typ {
+			t.Errorf("%s: Type = %v; want %v", name, got[name], typ)
 		}
-	}
-
-	// "conflict" should appear twice: once as a LeftOnly dir, once as a RightOnly file.
-	count := 0
-	for _, c := range res.Children {
-		if c.Name != "conflict" {
-			continue
-		}
-		count++
-		switch c.Type {
-		case diffmodel.Dir:
-			if c.Presence != diffmodel.LeftOnly {
-				t.Errorf("conflict dir: Presence = %v; want LeftOnly", c.Presence)
-			}
-		case diffmodel.File:
-			if c.Presence != diffmodel.RightOnly {
-				t.Errorf("conflict file: Presence = %v; want RightOnly", c.Presence)
-			}
-		default:
-			t.Errorf("conflict: unexpected type %v", c.Type)
-		}
-	}
-	if count != 2 {
-		t.Fatalf("expected 2 'conflict' rows (dir + file), got %d", count)
 	}
 }
 
 func TestDoListSortsDirsFirstThenAlpha(t *testing.T) {
-	left := t.TempDir()
-	right := t.TempDir()
-
+	dir := t.TempDir()
 	for _, name := range []string{"zzz.txt", "aaa.txt"} {
-		mustWrite(t, filepath.Join(left, name), "x")
-		mustWrite(t, filepath.Join(right, name), "x")
+		mustWrite(t, filepath.Join(dir, name), "x")
 	}
 	for _, name := range []string{"zdir", "adir"} {
-		mustMkdir(t, filepath.Join(left, name))
-		mustMkdir(t, filepath.Join(right, name))
+		mustMkdir(t, filepath.Join(dir, name))
 	}
 
-	res := DoList(ListJob{LeftAbs: left, RightAbs: right})
+	res := DoList(ListJob{Abs: dir})
 	var names []string
-	for _, c := range res.Children {
-		names = append(names, c.Name)
+	for _, e := range res.Entries {
+		names = append(names, e.Name)
 	}
 	want := []string{"adir", "zdir", "aaa.txt", "zzz.txt"}
 	if len(names) != len(want) {
@@ -117,57 +85,94 @@ func TestDoListSortsDirsFirstThenAlpha(t *testing.T) {
 	}
 }
 
-func TestDoListMissingSideIsNotAnError(t *testing.T) {
-	left := t.TempDir()
-	right := filepath.Join(left, "does-not-exist")
-
-	res := DoList(ListJob{LeftAbs: left, RightAbs: right})
-	if res.RightErr != nil {
-		t.Fatalf("RightErr = %v; want nil (missing dir is not an error)", res.RightErr)
+func TestDoListMissingDirectoryIsNotAnError(t *testing.T) {
+	// A directory that exists on one side and not the other is the normal
+	// one-sided case, not a failure (SPEC.md §4.3).
+	res := DoList(ListJob{Abs: filepath.Join(t.TempDir(), "does-not-exist")})
+	if res.Err != nil {
+		t.Fatalf("Err = %v; want nil (missing dir is not an error)", res.Err)
+	}
+	if len(res.Entries) != 0 {
+		t.Fatalf("Entries = %v; want none", res.Entries)
 	}
 }
 
-func TestDoCompareSizeMtimeDetectsSizeDifference(t *testing.T) {
+// A size mismatch is a conclusive content verdict, so DoCompare answers
+// it without opening either file. Whoever enqueues the job normally
+// knows both sizes already and never creates it (SPEC.md §5.1); this is
+// the fallback for a file that changed since it was statted.
+func TestDoCompareSizeMismatchNeedsNoRead(t *testing.T) {
 	left := t.TempDir()
 	right := t.TempDir()
 	mustWrite(t, filepath.Join(left, "f"), "hello")
 	mustWrite(t, filepath.Join(right, "f"), "hello!!!")
+	// Unreadable on both sides: opening either one would fail outright,
+	// so a CompareError here would prove the precheck didn't happen.
+	for _, dir := range []string{left, right} {
+		if err := os.Chmod(filepath.Join(dir, "f"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	out := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "f"), RightAbs: filepath.Join(right, "f"),
-		Type: diffmodel.File, Level: diffmodel.SizeMtime,
+		Type: diffmodel.File, Level: diffmodel.Checksum,
 	})
 	if out.Result != diffmodel.Differs {
-		t.Fatalf("Result = %v; want Differs (sizes differ)", out.Result)
-	}
-	if out.Stat == nil || out.Stat.LeftSize != 5 || out.Stat.RightSize != 8 {
-		t.Fatalf("Stat = %+v; want LeftSize=5 RightSize=8", out.Stat)
+		t.Fatalf("Result = %v (err %v); want Differs decided from the sizes alone", out.Result, out.Err)
 	}
 }
 
-func TestDoCompareSizeMtimeDetectsMtimeOnlyDifference(t *testing.T) {
-	left := t.TempDir()
-	right := t.TempDir()
-	mustWrite(t, filepath.Join(left, "f"), "hello")
-	mustWrite(t, filepath.Join(right, "f"), "hello")
-
-	now := time.Now()
-	if err := os.Chtimes(filepath.Join(left, "f"), now, now); err != nil {
-		t.Fatal(err)
-	}
-	later := now.Add(time.Hour)
-	if err := os.Chtimes(filepath.Join(right, "f"), later, later); err != nil {
+func TestDoStatReadsSizeAndMtime(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "f"), "hello")
+	when := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(filepath.Join(dir, "f"), when, when); err != nil {
 		t.Fatal(err)
 	}
 
-	// Sizes are equal but mtimes differ — the merged size+mtime level must
-	// catch this even though a size-only check wouldn't.
-	out := DoCompare(CompareJob{
-		LeftAbs: filepath.Join(left, "f"), RightAbs: filepath.Join(right, "f"),
-		Type: diffmodel.File, Level: diffmodel.SizeMtime,
-	})
-	if out.Result != diffmodel.Differs {
-		t.Fatalf("Result = %v; want Differs (mtimes differ)", out.Result)
+	out := DoStat(StatJob{Side: diffmodel.Right, RelPath: "f", Abs: filepath.Join(dir, "f"), Type: diffmodel.File})
+	if out.Err != nil {
+		t.Fatalf("Err = %v; want nil", out.Err)
+	}
+	if out.Side != diffmodel.Right || out.RelPath != "f" {
+		t.Errorf("result = %v %q; want Right f — a result has to say what it's about", out.Side, out.RelPath)
+	}
+	if out.Size != 5 {
+		t.Errorf("Size = %d; want 5", out.Size)
+	}
+	if !out.Mtime.Equal(when) {
+		t.Errorf("Mtime = %v; want %v", out.Mtime, when)
+	}
+	if out.LinkTarget != "" {
+		t.Errorf("LinkTarget = %q; want empty for a regular file", out.LinkTarget)
+	}
+}
+
+// A symlink is compared by its target string alone (SPEC.md §7), so the
+// stat that measures it reads that target too — and never follows it,
+// which is why a link to nowhere still stats fine.
+func TestDoStatReadsSymlinkTargetWithoutFollowing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Symlink("/nowhere/at/all", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	out := DoStat(StatJob{RelPath: "link", Abs: filepath.Join(dir, "link"), Type: diffmodel.Symlink})
+	if out.Err != nil {
+		t.Fatalf("Err = %v; want nil — a dangling link is still a link", out.Err)
+	}
+	if out.LinkTarget != "/nowhere/at/all" {
+		t.Errorf("LinkTarget = %q; want the target string", out.LinkTarget)
+	}
+}
+
+func TestDoStatMissingEntryIsAnError(t *testing.T) {
+	// Unlike a listing, where a missing directory is the normal one-sided
+	// case: this entry was seen by a listing of its parent.
+	out := DoStat(StatJob{Abs: filepath.Join(t.TempDir(), "gone"), Type: diffmodel.File})
+	if out.Err == nil {
+		t.Fatal("Err = nil; want the lstat failure")
 	}
 }
 
@@ -223,39 +228,6 @@ func TestDoCompareChecksumAcrossChunkBoundary(t *testing.T) {
 	})
 	if out.Result != diffmodel.Differs {
 		t.Fatalf("Result = %v; want Differs", out.Result)
-	}
-}
-
-func TestDoCompareSymlinkComparesTargetString(t *testing.T) {
-	left := t.TempDir()
-	right := t.TempDir()
-
-	if err := os.Symlink("/target/a", filepath.Join(left, "link")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/target/a", filepath.Join(right, "link")); err != nil {
-		t.Fatal(err)
-	}
-	out := DoCompare(CompareJob{
-		LeftAbs: filepath.Join(left, "link"), RightAbs: filepath.Join(right, "link"),
-		Type: diffmodel.Symlink, Level: diffmodel.SizeMtime, // level should be irrelevant for symlinks
-	})
-	if out.Result != diffmodel.Same {
-		t.Fatalf("Result = %v; want Same (identical targets)", out.Result)
-	}
-
-	if err := os.Symlink("/target/b", filepath.Join(right, "link2")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/target/other", filepath.Join(left, "link2")); err != nil {
-		t.Fatal(err)
-	}
-	out2 := DoCompare(CompareJob{
-		LeftAbs: filepath.Join(left, "link2"), RightAbs: filepath.Join(right, "link2"),
-		Type: diffmodel.Symlink, Level: diffmodel.Checksum,
-	})
-	if out2.Result != diffmodel.Differs {
-		t.Fatalf("Result = %v; want Differs (different targets)", out2.Result)
 	}
 }
 

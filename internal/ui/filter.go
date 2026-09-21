@@ -4,14 +4,14 @@ import (
 	"strings"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
-	"github.com/m42cel/dirdiff/internal/tree"
+	"github.com/m42cel/dirdiff/internal/pairtree"
 )
 
 // FilterStatus is one row-status filter option (SPEC.md §4.7): the
 // filter's options are exactly diffmodel's row statuses, under the names
 // the popup uses for them. Keeping them the same type is what lets a
 // selection be tested directly against a row's own status and against
-// the per-status descendant tallies tree.Node keeps, with no mapping in
+// the per-status descendant tallies pairtree.Node keeps, with no mapping in
 // between that could drift from either.
 type FilterStatus = diffmodel.RowStatus
 
@@ -102,22 +102,22 @@ func filterSetLabel(s FilterSet) string {
 
 // visibleChildren returns m.cursorDir's children that pass the active
 // filter set (SPEC.md §4.7) — every child when the set is "all".
-func (m Model) visibleChildren() []*tree.Node {
+func (m Model) visibleChildren() []*pairtree.Node {
 	if m.atRootParent {
 		// The root pair is the only row at that level and the only way
 		// back down into the tree, so the filter never applies to it — the
 		// same reasoning as the one-sided navigation placeholder (SPEC.md
 		// §4.3), which filtering also leaves alone.
-		return []*tree.Node{m.cursorDir}
+		return []*pairtree.Node{m.cursorDir}
 	}
 	return filterChildren(m.cursorDir.Children, m.filter)
 }
 
-func filterChildren(children []*tree.Node, filter FilterSet) []*tree.Node {
+func filterChildren(children []*pairtree.Node, filter FilterSet) []*pairtree.Node {
 	if filter.isAll() {
 		return children
 	}
-	out := make([]*tree.Node, 0, len(children))
+	out := make([]*pairtree.Node, 0, len(children))
 	for _, c := range children {
 		if matchesFilter(c, filter) || hasMatchingDescendant(c, filter) {
 			out = append(out, c)
@@ -131,14 +131,14 @@ func filterChildren(children []*tree.Node, filter FilterSet) []*tree.Node {
 // this package's (see diffmodel.ClassifyRow): notably, a directory never
 // has the Equal or Different status, so it can only surface under those
 // filters via hasMatchingDescendant.
-func matchesFilter(n *tree.Node, filter FilterSet) bool {
+func matchesFilter(n *pairtree.Node, filter FilterSet) bool {
 	s := n.RowStatus()
 	return s != diffmodel.RowNone && filter[s]
 }
 
 // hasMatchingDescendant reports whether n's already-known subtree holds
 // a row matching any selected status (SPEC.md §4.7's "dimmed ancestor"
-// case), by reading the tallies tree.Node maintains rather than walking
+// case), by reading the tallies pairtree.Node maintains rather than walking
 // the subtree: this runs for every visible row on every render, so a
 // walk here costs a full traversal of the tree several times a second
 // even when nothing is happening.
@@ -147,7 +147,7 @@ func matchesFilter(n *tree.Node, filter FilterSet) bool {
 // listed has no children to count — which is why the filtered view
 // re-evaluates live as background listing and comparison results stream
 // in.
-func hasMatchingDescendant(n *tree.Node, filter FilterSet) bool {
+func hasMatchingDescendant(n *pairtree.Node, filter FilterSet) bool {
 	for _, f := range allFilters {
 		if filter[f] && n.DescendantsWithStatus(f) > 0 {
 			return true

@@ -6,15 +6,17 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
+	"github.com/m42cel/dirdiff/internal/pairtree"
 	"github.com/m42cel/dirdiff/internal/scan"
 	"github.com/m42cel/dirdiff/internal/session"
-	"github.com/m42cel/dirdiff/internal/tree"
+	"github.com/m42cel/dirdiff/internal/sidetree"
 )
 
 const (
@@ -33,7 +35,13 @@ const (
 	// regardless of which fields the selected row populates.
 	detailsContentLines = 5
 	detailsPanelHeight  = detailsContentLines + 1 // +1 for the top border
-	statusBarHeight     = 3
+
+	// statusBarFixedLines is the part of the status bar that's always
+	// exactly one line: where you are, and what the queues are doing. The
+	// settings and the key legend below it each wrap to however many the
+	// width needs, so the bar's total height is a function of the width —
+	// see Model.statusBarHeight.
+	statusBarFixedLines = 1
 
 	// spinnerInterval is how often pending-work glyphs advance to their
 	// next animation frame (see animGlyph in view.go). Every such glyph
@@ -44,23 +52,66 @@ const (
 	spinnerInterval = 400 * time.Millisecond
 )
 
+// view is one pairing on screen and where the cursor stands in it. A
+// sub-compare pushes a new one and pops back to what it was opened from,
+// so this is exactly the state that is per-view rather than global.
+type view struct {
+	pairing   session.PairingID
+	root      *pairtree.Node // the pairing's root row
+	cursorDir *pairtree.Node
+
+	cursorIdx    int
+	scrollOffset int
+
+	// atRootParent is the one level that isn't a real directory listing
+	// (SPEC.md §4.3.1): standing above the pairing's two directories,
+	// where the only row is the pair itself, so their whole-subtree
+	// totals are readable in the details panel. cursorDir stays the
+	// pairing root throughout — this level has no node of its own, since
+	// the two directories' actual parents are unrelated to each other and
+	// are never listed or compared. In a sub-compare it's also the way
+	// out: ← from there pops back.
+	atRootParent bool
+}
+
+// selection is a sub-compare being chosen, one side at a time: the panes
+// navigate in lockstep (SPEC.md §4.1), so there is no moment at which the
+// cursor stands in two unrelated directories — instead 's' starts this,
+// Space chooses the directory under the cursor for whichever side is
+// being picked, and the second choice opens the pairing.
+type selection struct {
+	// side is the side being chosen right now; left is what was chosen
+	// for the left side, once side has moved on to Right.
+	side diffmodel.Side
+	left *sidetree.Node
+
+	// origin is where 's' was pressed. Cancelling restores it, and it —
+	// not wherever the hunt for the second directory ended — is what goes
+	// on the view stack, so leaving the sub-compare later lands where the
+	// whole operation started.
+	origin view
+}
+
 // Model is the root Bubble Tea model.
 type Model struct {
 	sess *session.Session
 
-	cursorDir    *tree.Node
-	cursorIdx    int
-	scrollOffset int
-	showHelp     bool
+	// view is the pairing being shown; stack holds the ones it was opened
+	// from, outermost first. The root pairing is always at the bottom and
+	// is never popped.
+	view
+	stack []view
 
-	// atRootParent is the one level that isn't a real directory listing
-	// (SPEC.md §4.3.1): standing above both roots, where the only row is
-	// the pair of compared directories themselves, so their whole-tree
-	// totals are readable in the details panel. cursorDir stays the tree
-	// root throughout — this level has no node of its own, since the two
-	// roots' actual parent directories are unrelated to each other and are
-	// never listed or compared.
-	atRootParent bool
+	// picking is the sub-compare being set up (SPEC.md §4.9), or nil when
+	// there is none. It's replaced wholesale rather than mutated, so a
+	// copy of the Model never shares one with its successor.
+	picking *selection
+
+	// note is a one-off line for the status bar — why a keypress did
+	// nothing, usually — shown until the next keypress.
+	note string
+
+	showHelp bool
 
 	// compareLevel and recursive carry over between 'c' presses until
 	// changed again with 'l' / 'r'. Defaults match the CLI's own default
@@ -76,6 +127,9 @@ type Model struct {
 	// from filter itself so cancelling with Esc leaves filter untouched —
 	// filterEditing starts as a copy of filter when the popup opens and
 	// is only copied back into filter on a confirming Enter.
+	// They, and the filter below, are global rather than per view: a
+	// sub-compare is a different pair of directories, not a different
+	// set of preferences about how to compare.
 	filter         FilterSet
 	showFilterMenu bool
 	filterCursor   int
@@ -97,11 +151,12 @@ type Model struct {
 	width, height int
 }
 
-// New builds the initial model bound to sess.
+// New builds the initial model bound to sess, showing the root pairing.
 func New(sess *session.Session) Model {
+	root := sess.Tree()
 	return Model{
 		sess:         sess,
-		cursorDir:    sess.Tree,
+		view:         view{pairing: session.RootPairing, root: root, cursorDir: root},
 		compareLevel: diffmodel.SizeMtime,
 		recursive:    true,
 		filter:       defaultFilterSet(),
@@ -109,11 +164,16 @@ func New(sess *session.Session) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitListResult(m.sess.ListResults()), waitCompareResult(m.sess.CompareResults()), tickSpinner())
+	return tea.Batch(
+		waitListResult(m.sess.ListResults()),
+		waitStatResult(m.sess.StatResults()),
+		waitCompareResult(m.sess.CompareResults()),
+		tickSpinner())
 }
 
 type listResultMsg struct{ r scan.ListResult }
-type compareResultMsg struct{ r scan.CompareOutcome }
+type statResultMsg struct{ r scan.StatResult }
+type compareResultMsg struct{ r session.CompareResult }
 type spinnerTickMsg struct{}
 
 func waitListResult(ch <-chan scan.ListResult) tea.Cmd {
@@ -126,7 +186,17 @@ func waitListResult(ch <-chan scan.ListResult) tea.Cmd {
 	}
 }
 
-func waitCompareResult(ch <-chan scan.CompareOutcome) tea.Cmd {
+func waitStatResult(ch <-chan scan.StatResult) tea.Cmd {
+	return func() tea.Msg {
+		r, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return statResultMsg{r}
+	}
+}
+
+func waitCompareResult(ch <-chan session.CompareResult) tea.Cmd {
 	return func() tea.Msg {
 		r, ok := <-ch
 		if !ok {
@@ -151,6 +221,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sess.OnListResult(msg.r)
 		m.clampCursor()
 		return m, waitListResult(m.sess.ListResults())
+
+	case statResultMsg:
+		m.sess.OnStatResult(msg.r)
+		m.clampCursor()
+		return m, waitStatResult(m.sess.StatResults())
 
 	case compareResultMsg:
 		m.sess.OnCompareResult(msg.r)
@@ -275,11 +350,76 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A note explains why the *last* keypress did nothing, so it lives
+	// exactly until the next one.
+	m.note = ""
+
+	if m.picking != nil {
+		return m.handleSelectionKey(key)
+	}
+
 	switch key {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "?":
 		m.showHelp = true
+	case "l":
+		m.cycleCompareLevel()
+	case "r":
+		m.recursive = !m.recursive
+	case "f":
+		m.showFilterMenu = true
+		m.filterCursor = 0
+		m.filterEditing = cloneFilterSet(m.filter)
+	case "w":
+		m.showWorkersMenu = true
+		m.workersCursor = 0
+		m.editingWorkers = false
+		m.workersInput = ""
+	case "c":
+		m.triggerCompare()
+	case "C":
+		m.triggerCompareDir()
+	case "s":
+		m.startSelection()
+	case "n":
+		m.jumpDiff(true)
+	case "N":
+		m.jumpDiff(false)
+	case "x":
+		m.sess.CancelPendingCompares()
+	default:
+		m.navigate(key)
+	}
+	return m, nil
+}
+
+// handleSelectionKey dispatches a keypress while a sub-compare is being
+// chosen (SPEC.md §4.9). The mode *adds* a key rather than rebinding
+// any: every movement key — →/Enter to descend included — keeps meaning
+// exactly what it means outside, so there is nothing to unlearn on the
+// way in or out, and no way to confirm a choice by reflex.
+func (m Model) handleSelectionKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "?":
+		m.showHelp = true
+	case " ":
+		m.choose()
+	case "esc", "s":
+		m.cancelSelection()
+	default:
+		m.navigate(key)
+	}
+	return m, nil
+}
+
+// navigate handles the movement keys, which are shared by the normal
+// view and sub-compare selection. It reports whether key was one of
+// them.
+func (m *Model) navigate(key string) bool {
+	switch key {
 	case "up":
 		if m.cursorIdx > 0 {
 			m.cursorIdx--
@@ -306,29 +446,10 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.enter()
 	case "left", "backspace":
 		m.ascend()
-	case "l":
-		m.cycleCompareLevel()
-	case "r":
-		m.recursive = !m.recursive
-	case "f":
-		m.showFilterMenu = true
-		m.filterCursor = 0
-		m.filterEditing = cloneFilterSet(m.filter)
-	case "w":
-		m.showWorkersMenu = true
-		m.workersCursor = 0
-		m.editingWorkers = false
-		m.workersInput = ""
-	case "c":
-		m.triggerCompare()
-	case "n":
-		m.jumpDiff(true)
-	case "N":
-		m.jumpDiff(false)
-	case "x":
-		m.sess.CancelPendingCompares()
+	default:
+		return false
 	}
-	return m, nil
+	return true
 }
 
 func (m *Model) moveCursor(delta int) {
@@ -395,13 +516,105 @@ func (m *Model) applyWorkersInput() {
 	}
 }
 
-// triggerCompare runs the persistent compareLevel setting on the current
-// directory's children (SPEC.md §5.2), recursively if the persistent
-// recursive toggle is on. Neither setting is consumed by the trigger, so
-// 'c' can be pressed repeatedly (e.g. while navigating) without
-// re-selecting them each time.
+// triggerCompare runs the persistent compareLevel setting on the row
+// under the cursor ('c', SPEC.md §5.2): a file compares just itself, a
+// directory compares its children — or its whole subtree if the
+// persistent recursive toggle is on. Above the root (SPEC.md §4.3.1) the
+// selected row is the root pair itself, so 'c' there compares the roots,
+// which is what that level is for.
+//
+// Neither setting is consumed by the trigger, so 'c' can be pressed
+// repeatedly (e.g. while navigating) without re-selecting them each time.
 func (m *Model) triggerCompare() {
-	m.sess.TriggerCompare(m.cursorDir, m.compareLevel, m.recursive)
+	visible := m.visibleChildren()
+	if m.cursorIdx >= len(visible) {
+		return
+	}
+	m.sess.TriggerCompare(m.pairing, visible[m.cursorIdx], m.compareLevel, m.recursive)
+}
+
+// triggerCompareDir runs the same settings on the whole directory being
+// stood in ('C'), whether or not the filter is hiding some of it: the
+// filter is a view concern, and a recursive trigger reaches hidden
+// descendants anyway.
+func (m *Model) triggerCompareDir() {
+	m.sess.TriggerCompare(m.pairing, m.cursorDir, m.compareLevel, m.recursive)
+}
+
+// startSelection begins choosing a sub-compare ('s', SPEC.md §4.9),
+// starting with its left side.
+func (m *Model) startSelection() {
+	m.picking = &selection{side: diffmodel.Left, origin: m.view}
+}
+
+// cancelSelection abandons the selection and puts the view back where it
+// started, since navigating around to find a directory was incidental to
+// an operation that didn't happen.
+func (m *Model) cancelSelection() {
+	m.view = m.picking.origin
+	m.picking = nil
+	m.sess.Navigate(m.pairing, m.cursorDir)
+}
+
+// choose takes the directory under the cursor as the side currently
+// being picked (Space). The first choice moves on to the other side; the
+// second opens the pairing. It's a no-op, with a note, on a row that has
+// no such side or isn't a directory — pairing two files would be a
+// one-row view of no value — and the selection stays open so the next
+// candidate is one keypress away.
+func (m *Model) choose() {
+	visible := m.visibleChildren()
+	if m.cursorIdx >= len(visible) {
+		return
+	}
+	n := visible[m.cursorIdx]
+	sd := m.picking.side
+	sn := n.Side(sd)
+	switch {
+	case sn == nil:
+		m.note = fmt.Sprintf("%s doesn't exist on the %s — choose one that does", m.rowLabel(n, sd), sideLabel(sd))
+		return
+	case !sn.IsDir():
+		m.note = "a sub-compare pairs two directories, not files"
+		return
+	}
+	if sd == diffmodel.Left {
+		m.picking = &selection{side: diffmodel.Right, left: sn, origin: m.picking.origin}
+		return
+	}
+	m.openSubCompare(m.picking.left, sn)
+}
+
+// openSubCompare pairs the two chosen directories and pushes the result
+// on the view stack (SPEC.md §4.9).
+func (m *Model) openSubCompare(left, right *sidetree.Node) {
+	id, err := m.sess.OpenPairing(left, right)
+	if err != nil {
+		m.note = err.Error()
+		return
+	}
+	p, ok := m.sess.Pairing(id)
+	if !ok {
+		return
+	}
+	m.stack = append(m.stack, m.picking.origin)
+	m.view = view{pairing: id, root: p.Root, cursorDir: p.Root}
+	m.picking = nil
+	m.sess.Navigate(id, p.Root)
+}
+
+// popSubCompare leaves the current sub-compare for whichever view it was
+// opened from, dropping it (SPEC.md §4.9): a sub-compare lives only
+// while you're in it. Re-entering the same pair rebuilds it from the
+// side trees, which is instant for everything but the bytes.
+func (m *Model) popSubCompare() {
+	if len(m.stack) == 0 {
+		return // the root pairing is the bottom; there's nowhere to go
+	}
+	m.sess.ClosePairing(m.pairing)
+	m.view = m.stack[len(m.stack)-1]
+	m.stack = m.stack[:len(m.stack)-1]
+	m.sess.Navigate(m.pairing, m.cursorDir)
 }
 
 // enter navigates into the directory under the cursor. Only directories
@@ -410,12 +623,12 @@ func (m *Model) triggerCompare() {
 // exists on the other (SPEC.md §4.3).
 func (m *Model) enter() {
 	if m.atRootParent {
-		// The only row up there is the root pair itself, so entering it is
+		// The only row up there is the pairing itself, so entering it is
 		// simply the way back down into the normal view.
 		m.atRootParent = false
 		m.cursorIdx = 0
 		m.scrollOffset = 0
-		m.sess.Navigate(m.cursorDir)
+		m.sess.Navigate(m.pairing, m.cursorDir)
 		return
 	}
 	visible := m.visibleChildren()
@@ -429,7 +642,7 @@ func (m *Model) enter() {
 	m.cursorDir = target
 	m.cursorIdx = 0
 	m.scrollOffset = 0
-	m.sess.Navigate(target)
+	m.sess.Navigate(m.pairing, target)
 }
 
 // ascend moves to the parent directory, restoring the cursor to the
@@ -438,13 +651,23 @@ func (m *Model) enter() {
 func (m *Model) ascend() {
 	parent := m.cursorDir.Parent
 	if parent == nil {
-		// Above the root there's one more level to go up to — the root pair
-		// itself as a single row (SPEC.md §4.3.1) — and nothing above that.
+		// Above the pairing's root there's one more level to go up to —
+		// the pair itself as a single row (SPEC.md §4.3.1). Past that,
+		// a sub-compare leaves for the view it was opened from, and the
+		// root pairing has nowhere left to go.
 		if !m.atRootParent {
 			m.atRootParent = true
 			m.cursorIdx = 0
 			m.scrollOffset = 0
+			return
 		}
+		if m.picking != nil {
+			// Leaving the pairing mid-choice would close the very view the
+			// selection started in, so the way out is to finish or cancel.
+			m.note = "finish the sub-compare selection or cancel it (Esc) before leaving"
+			return
+		}
+		m.popSubCompare()
 		return
 	}
 	child := m.cursorDir
@@ -458,7 +681,7 @@ func (m *Model) ascend() {
 	}
 	m.scrollOffset = 0
 	m.ensureCursorVisible()
-	m.sess.Navigate(parent)
+	m.sess.Navigate(m.pairing, parent)
 }
 
 // jumpDiff moves the cursor to the next (or previous) visible row in the
@@ -485,8 +708,8 @@ func (m *Model) jumpDiff(forward bool) {
 	}
 }
 
-func isDiffering(n *tree.Node) bool {
-	if n.Presence != diffmodel.Both {
+func isDiffering(n *pairtree.Node) bool {
+	if n.Presence() != diffmodel.Both {
 		return true
 	}
 	return n.Result == diffmodel.Differs || n.Result == diffmodel.CompareError
@@ -506,7 +729,7 @@ func (m *Model) ensureCursorVisible() {
 }
 
 func (m Model) listAreaHeight() int {
-	h := m.height - paneBoxOverhead - paneTitleRows - detailsPanelHeight - statusBarHeight
+	h := m.height - paneBoxOverhead - paneTitleRows - detailsPanelHeight - m.statusBarHeight()
 	if h < 1 {
 		h = 1
 	}

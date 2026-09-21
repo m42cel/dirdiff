@@ -58,8 +58,8 @@ func (m Model) View() string {
 	// its content width is trimmed by that same 2 columns, matching the
 	// leftWidth/rightWidth truncate() calls below.
 	titleCellStyle := lipgloss.NewStyle().PaddingLeft(2)
-	leftTitle := titleStyle.Render(truncate(m.paneTitle(m.sess.LeftRoot), leftWidth))
-	rightTitle := titleStyle.Render(truncate(m.paneTitle(m.sess.RightRoot), rightWidth))
+	leftTitle := titleStyle.Render(truncate(m.paneTitle(diffmodel.Left), leftWidth))
+	rightTitle := titleStyle.Render(truncate(m.paneTitle(diffmodel.Right), rightWidth))
 	titleRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		titleCellStyle.Width(leftWidth+paneOverhead).Render(leftTitle),
 		lipgloss.NewStyle().Width(gutterWidth).Render(""),
@@ -222,13 +222,15 @@ func listingSuffix(pending, spinnerFrame int) string {
 	return pendingStyle.Render(" " + animGlyph(spinnerGlyphFrames, spinnerFrame))
 }
 
-// renderRootParentRow renders the single row shown above the root
-// (SPEC.md §4.3.1): the two compared directories themselves, named the way
-// a listing of each one's parent would name them. It's always the cursor
-// row, always present on both sides, and never dimmed by the filter, so
-// none of renderRowTriple's per-row cases apply — but the gutter glyph and
-// the per-side listing indicator are the root's own, so a still-scanning
-// tree reads the same here as anywhere else.
+// renderRootParentRow renders the single row shown above the pairing's
+// two directories (SPEC.md §4.3.1): the pair itself, each side named the
+// way a listing of its own parent would name it. Under a sub-compare the
+// two names simply differ, which is precisely what that level was built
+// for. It's always the cursor row, always present on both sides, and
+// never dimmed by the filter, so none of renderRowTriple's per-row cases
+// apply — but the gutter glyph and the per-side listing indicator are the
+// pairing root's own, so a still-scanning tree reads the same here as
+// anywhere else.
 func (m Model) renderRootParentRow(leftWidth, rightWidth int) (left, gutter, right string) {
 	root := m.cursorDir
 	glyph, style := statusGlyph(root, m.spinnerFrame)
@@ -242,11 +244,21 @@ func (m Model) renderRootParentRow(leftWidth, rightWidth int) (left, gutter, rig
 		rightBudget -= pendingSuffixWidth
 	}
 
-	left = cursorStyle.Render(style.Render(truncate(rootRowName(m.sess.LeftRoot)+"/", leftBudget)))
-	right = cursorStyle.Render(style.Render(truncate(rootRowName(m.sess.RightRoot)+"/", rightBudget)))
+	left = cursorStyle.Render(style.Render(truncate(m.rootRowLabel(diffmodel.Left)+"/", leftBudget)))
+	right = cursorStyle.Render(style.Render(truncate(m.rootRowLabel(diffmodel.Right)+"/", rightBudget)))
 	left += listingSuffix(pendingLeft, m.spinnerFrame)
 	right += listingSuffix(pendingRight, m.spinnerFrame)
 	return left, cursorStyle.Render(style.Render(glyph)), right
+}
+
+// rootRowLabel names one side of the pairing as a row of its own parent.
+// A sub-compare's directory has a name; the compared roots don't — they
+// *are* the tree — so they fall back to the last element of their path.
+func (m Model) rootRowLabel(sd diffmodel.Side) string {
+	if sn := m.root.Side(sd); sn != nil && sn.Name != "" {
+		return sn.Name
+	}
+	return rootRowName(m.sideRoot(sd))
 }
 
 // rootRowName is how a root directory is named as a row of its own parent:
@@ -262,14 +274,44 @@ func rootRowName(root string) string {
 	}
 }
 
-// paneTitle is the path shown above a pane. Above the root (SPEC.md §4.3.1)
-// that's the root's own parent directory — the level actually being stood
-// in, even though none of its other entries are listed there.
-func (m Model) paneTitle(root string) string {
-	if m.atRootParent {
-		return filepath.Dir(root)
+func (m Model) sideRoot(sd diffmodel.Side) string {
+	if sd == diffmodel.Right {
+		return m.sess.RightRoot
 	}
-	return displayPath(root, m.cursorDir.PairRel)
+	return m.sess.LeftRoot
+}
+
+// sidePath is where a row actually lives on one side. Under a
+// sub-compare the two sides are at unrelated paths, so this is the only
+// honest thing to put above a pane — a pairing-relative path names a row
+// in both panes at once but is a real path in neither.
+//
+// A row missing on that side has no path of its own; it's spelled as the
+// nearest ancestor that does exist plus the rest of the way down, which
+// is the path the entry would have if it were there.
+func (m Model) sidePath(n *pairtree.Node, sd diffmodel.Side) string {
+	var below []string
+	for cur := n; cur != nil; cur = cur.Parent {
+		if sn := cur.Side(sd); sn != nil {
+			path := displayPath(m.sideRoot(sd), sn.RelPath)
+			for i := len(below) - 1; i >= 0; i-- {
+				path += "/" + below[i]
+			}
+			return path
+		}
+		below = append(below, cur.Name())
+	}
+	return m.sideRoot(sd)
+}
+
+// paneTitle is the path shown above a pane. Above the pairing (SPEC.md
+// §4.3.1) that's its own parent directory — the level actually being
+// stood in, even though none of its other entries are listed there.
+func (m Model) paneTitle(sd diffmodel.Side) string {
+	if m.atRootParent {
+		return filepath.Dir(m.sidePath(m.root, sd))
+	}
+	return m.sidePath(m.cursorDir, sd)
 }
 
 func styleIfNotEmpty(s string, style lipgloss.Style) string {
@@ -430,16 +472,37 @@ func (m Model) renderDetails() string {
 	return padDetailsLines(lines)
 }
 
-// detailsTitle names the selected row. The tree root has no name of its
-// own — it *is* the two compared directories — so above the root (SPEC.md
-// §4.3.1) it's titled with both root paths instead of an empty name.
+// detailsTitle names the selected row. A pairing's root row has no name
+// of its own — it *is* the two directories — so above it (SPEC.md
+// §4.3.1) it's titled with both their paths instead of an empty name.
 func (m Model) detailsTitle(n *pairtree.Node) string {
-	if n == m.sess.Tree() {
+	if n == m.root {
+		label := "compared roots"
+		if len(m.stack) > 0 {
+			label = "sub-compare"
+		}
 		// Two full paths can easily outrun the panel, which has to stay
 		// exactly detailsContentLines tall (see padDetailsLines).
-		return truncate(fmt.Sprintf("%s ↔ %s  [compared roots]", m.sess.LeftRoot, m.sess.RightRoot), m.width)
+		return truncate(fmt.Sprintf("%s ↔ %s  [%s]",
+			m.sidePath(n, diffmodel.Left), m.sidePath(n, diffmodel.Right), label), m.width)
 	}
 	return fmt.Sprintf("%s%s  [%s]", n.Name(), typeGlyph(n.Type), presenceLabel(n.Presence()))
+}
+
+// rowLabel names a row for a status-bar note. The pairing's root row has
+// no name of its own, so it's named by the side being talked about.
+func (m Model) rowLabel(n *pairtree.Node, sd diffmodel.Side) string {
+	if n == m.root {
+		return m.rootRowLabel(sd)
+	}
+	return n.Name()
+}
+
+func sideLabel(sd diffmodel.Side) string {
+	if sd == diffmodel.Right {
+		return "right"
+	}
+	return "left"
 }
 
 // haveStat reports whether one side of a row has had its metadata read.
@@ -590,6 +653,9 @@ func (m Model) renderStatusBar() string {
 	st := m.sess.Stats()
 	stats := fmt.Sprintf("Listing: %d pending, %d active · Comparing: %d pending, %d active",
 		st.ListPending, st.ListActive, st.CmpPending, st.CmpActive)
+	if where := m.whereLabel(); where != "" {
+		stats += " · " + where
+	}
 
 	recursiveLabel := "off"
 	if m.recursive {
@@ -597,9 +663,55 @@ func (m Model) renderStatusBar() string {
 	}
 	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s | scan workers: %d | compare workers: %d]",
 		compareLevelLabel(m.compareLevel), recursiveLabel, filterSetLabel(m.filter), m.sess.ListWorkers(), m.sess.CompareWorkers())
-	hint := "↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare row · C compare dir · n/N diff · x cancel · ? help · q quit"
 
-	return statusBarStyle.Render(stats) + "\n" + pendingStyle.Render(settings) + "\n" + dimStyle.Render(hint)
+	// The note takes the hint line rather than a line of its own: the
+	// panel's height has to stay fixed, and whatever just went wrong is
+	// more use than the keybindings for a moment.
+	last := dimStyle.Render("↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare row · C compare dir · [ ] mark · p pair · n/N diff · x cancel · ? help · q quit")
+	if m.note != "" {
+		last = pendingStyle.Render(m.note)
+	}
+
+	return statusBarStyle.Render(truncate(stats, m.width)) + "\n" +
+		pendingStyle.Render(settings) + "\n" + truncate(last, m.width)
+}
+
+// whereLabel says which pairing is on screen and what marks are waiting,
+// when either is worth saying: the root pairing with nothing marked is
+// the ordinary case and says nothing at all.
+func (m Model) whereLabel() string {
+	var parts []string
+	if len(m.stack) > 0 {
+		parts = append(parts, fmt.Sprintf("sub-compare: %s ↔ %s",
+			m.rootRowLabel(diffmodel.Left), m.rootRowLabel(diffmodel.Right)))
+	}
+	if marks := m.marksLabel(); marks != "" {
+		parts = append(parts, marks)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "[" + strings.Join(parts, " | ") + "]"
+}
+
+func (m Model) marksLabel() string {
+	if m.markLeft == nil && m.markRight == nil {
+		return ""
+	}
+	return fmt.Sprintf("marked: %s ↔ %s (p to pair)", markLabel(m.markLeft), markLabel(m.markRight))
+}
+
+// markLabel names a marked directory by its path below its own root,
+// which is what distinguishes two marks that share a basename.
+func markLabel(n *sidetree.Node) string {
+	switch {
+	case n == nil:
+		return "–"
+	case n.RelPath == "":
+		return "/"
+	default:
+		return n.RelPath
+	}
 }
 
 func helpView() string {
@@ -610,13 +722,15 @@ func helpView() string {
 		"PgUp/PgDn      move by page",
 		"Home / End     jump to first / last entry",
 		"→ / Enter      open directory (both panes navigate together)",
-		"← / Backspace  up to parent directory — at the root, up to both compared roots as a single row (whole-tree totals)",
+		"← / Backspace  up to parent directory — at the top, up to the two compared directories as a single row (whole-subtree totals); past that, out of a sub-compare",
 		"l              switch compare level — metadata (size + date) ↔ content (byte-for-byte) (remembered)",
 		"r              toggle recursive on/off (remembered, default on)",
 		"f              open row-status filter popup: multi-select Left-only / Right-only / Equal / Different — space toggles, enter confirms (remembered)",
 		"w              open worker-count popup: scan / compare pool size, Enter to type a new value",
 		"c              compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or whole subtree, with r)",
 		"C              compare the current directory the same way, whatever the cursor is on and whatever the filter hides",
+		"[ / ]          mark the selected row's left / right side as one end of a sub-compare (marks survive navigating anywhere)",
+		"p              pair the two marks: compare those directories against each other, whatever their paths — ← past the top row leaves again",
 		"n / N          jump to next / previous difference",
 		"x              cancel all pending (not yet started) comparisons",
 		"?              toggle this help",

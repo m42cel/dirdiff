@@ -34,6 +34,11 @@ dirdiff [flags] <left-dir> <right-dir>
 | `--compare-workers=<n>` | Concurrency of the checksum/compare worker pool. Default: `GOMAXPROCS` (§8.2). |
 | `--version` | Print version, commit and platform to stdout and exit 0, without entering the TUI. Valid on its own — the two directory arguments are not required with it. |
 
+`--level`'s three values keep exactly the meanings above, whatever
+changes underneath: `none` touches nothing beyond `readdir`, `metadata`
+reads sizes and dates across the tree, `content` additionally reads
+bytes. The flag has always been the knob for how much I/O to spend.
+
 No other flags in v1 (no hidden-file toggle — dotfiles are always shown, no
 config persistence, no export). Row-status filtering is available at
 runtime via the `f` key (§4.7); there's no flag to preset it at launch.
@@ -50,13 +55,38 @@ Before entering the TUI, `dirdiff` validates both path arguments:
 
 ## 3. Core data model
 
+State is held as **two side trees and one or more pairings over them.**
+
+A side tree is one compared tree's own cached view of itself: one node
+per real filesystem entry, holding what `readdir` reported (name, type)
+and what a metadata read added (size, mtime, link target). It knows
+nothing about the other side. Listing and metadata are therefore per-side
+work, and a subtree read once is read once no matter how many pairings
+end up covering it.
+
+A pairing is two directories matched against each other, entry by entry,
+plus the merged tree of rows over them. The root pairing is the two
+compared roots; a sub-compare (§4.9) is any other two directories, at
+unrelated paths. A row points at the two side nodes it pairs, so what it
+says about *presence* and *existence* is derived rather than stored, and
+the same side node can appear in any number of pairings at once.
+
+A row's children are built only once every side it actually has has been
+listed. Showing one side's entries before the other has listed would
+flash them as one-sided and then upgrade them, so a row's presence is
+fixed when the row is created and never changes afterwards.
+
+What a pairing owns alone is its comparison verdicts — see §4.9.
+
 ### 3.1 Entry matching
 
-For a given directory, entries from the left and right listings are matched
-by **exact, byte-for-byte name comparison** (no case-insensitive or Unicode
-normalization matching). This is intentional: filesystems on the two sides
-may differ in case-sensitivity, and exact matching is the simplest,
-most predictable behavior.
+For a given pair of directories, entries from the left and right listings
+are matched by **exact, byte-for-byte name comparison** (no
+case-insensitive or Unicode normalization matching). This is intentional:
+filesystems on the two sides may differ in case-sensitivity, and exact
+matching is the simplest, most predictable behavior. Matching is a
+per-pairing operation over the two side trees, which is what lets the same
+directory be matched against different counterparts at the same time.
 
 **Files and directories are matched independently by (name, type).** If the
 left side has a *file* named `foo` and the right side has a *directory*
@@ -215,25 +245,30 @@ navigate down as long as it exists on *at least one* side:
   only to the existing side. Pressing "up a level" (parent) still works
   normally from this state — it re-syncs both panes to the shared parent.
 
-### 4.3.1 Above the roots
+### 4.3.1 Above the pairing
 
-Pressing "up a level" while already at the root goes up one further
-level, so the two compared directories can be selected as rows in their
-own right and their whole-tree totals (§4.2) read in the details panel.
-This level is **not** a listing of the roots' real parent directories:
-those two directories are unrelated to each other, are never listed, and
-nothing in them is ever compared. The panes show exactly one row — the
-left root in the left pane, the right root in the right pane, named as
-their parent would name them — with the root's own rolled-up status glyph
-in the gutter and its per-side listing-pending indicator, the same as any
-other directory row. Each pane's path title shows that side's parent
-directory, the level being stood in.
+Pressing "up a level" while already at the top of a pairing goes up one
+further level, so its two directories can be selected as a row in their
+own right and their whole-subtree totals (§4.2) read in the details
+panel. For the root pairing those two directories are the compared
+roots; under a sub-compare (§4.9) they are whatever was paired.
 
-Enter/right-arrow on that row descends back into the root listing; there
-is nothing above this level, so "up a level" there does nothing. The row
-status filter (§4.7) never applies to it — it's the only way back down.
-Comparing (`c`) from this level applies to the root, exactly as it would
-from inside it.
+This level is **not** a listing of the two directories' real parents:
+those are unrelated to each other, are never listed, and nothing in them
+is ever compared. The panes show exactly one row — the left directory in
+the left pane, the right one in the right pane, each named as its own
+parent would name it, which under a sub-compare means two different names
+— with the pairing root's own rolled-up status glyph in the gutter and
+its per-side listing-pending indicator, the same as any other directory
+row. Each pane's path title shows that side's parent directory, the level
+being stood in.
+
+Enter/right-arrow on that row descends back into the pairing. "Up a
+level" from there leaves a sub-compare for whatever view it was opened
+from (§4.9); at the root pairing there is nothing above, so it does
+nothing. The row status filter (§4.7) never applies to this row — it's
+the only way back down. Comparing (`c`) from this level applies to the
+pairing's root, exactly as it would from inside it.
 
 ### 4.4 Status bar
 
@@ -334,6 +369,53 @@ global cancel key, §5.4) — the excess workers simply stop picking up new
 jobs once their current one completes, or immediately if they're already
 idle.
 
+### 4.9 Sub-compares
+
+A directory that was moved or renamed shows up twice and unhelpfully:
+left-only at the old path, right-only at the new one, with nothing to say
+whether the contents match. A **sub-compare** is a second comparison view
+pairing those two subtrees — rendered exactly like the main one, with the
+same panes, glyphs, details panel and keys.
+
+**Marking.** The panes navigate in lockstep (§4.1), so there is no moment
+at which the cursor stands in two unrelated directories — which is what
+choosing a pairing would otherwise require. Instead one side is marked at
+a time, from wherever you happen to be: `[` marks the selected row's left
+side, `]` its right, and `p` pairs the two marks. A mark points at a
+directory in one side's tree, not at a row, so it survives navigating
+anywhere and any change of pairing. Marking a side a row doesn't have, or
+anything but a directory, is a no-op with a note in the status bar
+(pairing two files would be a one-row view of no value). The row above
+the pairing (§4.3.1) is markable too, so a whole root can be one half.
+
+**The stack.** `p` pushes the new pairing; `←` past its top row (§4.3.1)
+pops back to whichever view it was opened from. Sub-compares nest: `p`
+from inside one pushes another, and popping returns to the one it was
+opened from rather than to the root. The root pairing is the bottom of
+the stack and is never popped.
+
+**Lifetime.** A sub-compare lives only while you're in it: leaving drops
+its rows, its content verdicts and its still-queued content jobs. Jobs
+already in flight run to completion and their results are discarded
+(§5.4's "let it finish"). Memory is therefore bounded by stack depth, not
+by how many sub-compares have been opened.
+
+**What is shared and what isn't.** Listing and metadata are read per side
+(§3, §5.1) and shared by every pairing over the same directories, so
+opening a sub-compare over already-scanned subtrees costs no I/O at all —
+the pairing is a pure in-memory merge, and existence and metadata are
+there immediately. The settings (§5.2's level and recursive, §4.7's
+filter) are global too. What a pairing owns alone is its content
+verdicts: a byte-for-byte comparison is a statement about a *pair* of
+files, so comparing A with B says nothing about A vs C. That is why they
+are not transferable, and why re-entering a pair rebuilds instantly for
+everything except bytes you had asked to read.
+
+**Rendering.** Each pane's path title shows that side's own real path,
+which under a sub-compare simply diverge. The status bar names the
+pairing while one is open, and names the pending marks while they're
+being set.
+
 ## 5. Comparison levels and triggering
 
 ### 5.1 Levels
@@ -359,6 +441,12 @@ conclusive content verdict and the read is never performed. The check
 applies where the job would be created — a file whose two sides are known
 to differ in size never becomes a job — and again inside the job, for a
 file that changed since it was measured.
+
+Because metadata is read once and kept, what a row says is a snapshot of
+when it was read rather than of now — possibly minutes ago on a large
+tree. For a read-only viewer that is acceptable, but it is the argument
+for a future refresh key (re-list and re-measure a subtree), which v1
+does not have.
 
 Size and mtime are a single combined level ("metadata"), not two separate
 ones — a file only counts as "same" at this level if both match.
@@ -448,7 +536,13 @@ type (separate from files and directories):
 - Listing shows them with a distinct type glyph.
 - Comparison (any level) compares the **link target string itself**, not
   the target's content — e.g. "size" for a symlink is undefined/not
-  applicable, "checksum" compares the readlink() target strings.
+  applicable; the metadata level's per-side read (§5.1) collects the
+  `readlink()` target, and the two targets are then compared as strings.
+  That is the whole of what a symlink can be compared by, so the verdict
+  is final rather than provisional: a later content trigger has nothing
+  deeper to read and never opens anything.
+- A symlink's own size is never counted toward a directory's totals
+  (§4.2), since it measures the link rather than what it names.
 - This avoids symlink-cycle handling entirely and avoids ever reading data
   outside the two compared root trees.
 
@@ -507,19 +601,34 @@ performs rather than guessing correctly up front.
 ### 8.3 Priority queue and reprioritization
 
 Both pools are backed by a priority queue (not FIFO), ordered by tree-edge
-distance from a live "focus" path rather than by fixed tiers:
+distance from a live "focus" path rather than by fixed tiers.
 
-- Every queued job in the focus path's subtree — at any depth, not just
-  its direct children — pops ahead of every job outside it; within each
-  of those two groups, jobs closer to the focus path (fewer tree edges
-  away) pop first, and arrival order breaks remaining ties.
+A job's key is a path prefixed by a namespace segment naming which tree
+that path is in: `L/…` and `R/…` for per-side work (listing and
+metadata), and one namespace per pairing for its content comparisons.
+Focus is therefore a **set** of paths, one per namespace, and each is
+measured against its own namespace alone. The two panes stand in two
+unrelated paths under a sub-compare, so no single path expresses what the
+user is looking at — and a "distance" between two unconnected trees isn't
+a tree distance at all: with no shared ancestor it degenerates to the sum
+of both depths, which can undercut a real same-tree distance and rank one
+tree's job by how deep the other pane happens to be standing. A namespace
+with no focus — a suspended pairing's leftovers, or anything before the
+first navigation — is simply never "under" anything and pops in depth
+order within its own tree, which is the breadth-first order §8.1 wants.
+
+- Every queued job in its own focus path's subtree — at any depth, not
+  just its direct children — pops ahead of every job outside it; within
+  each of those two groups, jobs closer to the focus path (fewer tree
+  edges away) pop first, and arrival order breaks remaining ties.
 - **Navigating between directories** (moving the cursor's "current
   directory" — i.e. Enter/back, not just moving the cursor up/down within
   the same directory's entries) immediately makes the newly entered
-  directory the focus path, reordering both queues: its own listing job
-  (if not already complete) and its whole known subtree jump ahead of
-  everything else, and jobs from wherever the focus used to be fall back
-  to plain distance/arrival order.
+  directory the focus, reordering both queues: each side of it, plus the
+  pairing showing it, becomes its namespace's focus, so their listing
+  jobs (if not already complete) and their whole known subtrees jump
+  ahead of everything else, and jobs from wherever the focus used to be
+  fall back to plain distance/arrival order.
 - Moving the cursor within the same directory's already-listed entries
   does **not** trigger reprioritization — only directory changes do.
 - Comparison jobs triggered by the user (§5.2) always target the
@@ -546,13 +655,15 @@ plus the full reference via `?` (§4.5).
 |---|---|
 | `↑` / `↓` | Move cursor within current directory listing (both panes move together) |
 | `→` / `Enter` | Navigate into directory under cursor (both panes descend together; one-sided case per §4.3) |
-| `←` / `Backspace` | Navigate to parent directory (both panes ascend together); at the root, up to the two compared roots as a single row (§4.3.1) |
+| `←` / `Backspace` | Navigate to parent directory (both panes ascend together); at the pairing's root, up to its two directories as a single row (§4.3.1); past that, out of a sub-compare (§4.9) |
 | `l` | Switch the persistent compare-level setting: metadata (size+date) ↔ content (byte-for-byte) (remembered until changed again) |
 | `r` | Toggle the persistent recursive setting on/off (remembered; default on) |
 | `f` | Open the row-status filter popup: multi-select Left-only / Right-only / Equal / Different (§4.7; remembered like `l`/`r`) |
 | `w` | Open the worker-count popup: resize the scan/compare pools live (§4.8) |
 | `c` | Compare the selected row at the current level/recursive setting |
 | `C` | Compare the current directory at the current level/recursive setting |
+| `[` / `]` | Mark the selected row's left / right side as one end of a sub-compare (§4.9) |
+| `p` | Open a sub-compare of the two marks (§4.9) |
 | `n` / `N` | Jump to next / previous entry in the current directory whose status isn't "same" (only considers entries already compared at some level) |
 | `X` / `Esc` | Cancel/clear all pending (not-yet-started) queued comparison jobs |
 | `?` | Toggle full keybinding help overlay |

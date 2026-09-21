@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -249,11 +250,14 @@ func TestAscendAboveRootShowsBothRootsAsOneRow(t *testing.T) {
 }
 
 func TestRootParentPaneTitlesAndRowNames(t *testing.T) {
-	m, _ := newTestModel(t)
+	m, sess := newTestModel(t)
 	m.atRootParent = true
 
-	if got, want := m.paneTitle("/tmp/alpha/left"), "/tmp/alpha"; got != want {
+	if got, want := m.paneTitle(diffmodel.Left), filepath.Dir(sess.LeftRoot); got != want {
 		t.Errorf("pane title = %q; want the root's parent %q", got, want)
+	}
+	if got, want := m.rootRowLabel(diffmodel.Left), filepath.Base(sess.LeftRoot); got != want {
+		t.Errorf("root row label = %q; want the root's own last element %q", got, want)
 	}
 	if got, want := rootRowName("/tmp/alpha/left"), "left"; got != want {
 		t.Errorf("root row name = %q; want %q", got, want)

@@ -176,6 +176,15 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   entries or subtree) and `C` the **current directory**; both go through
   the one `session.TriggerCompare`, so the difference between them is
   only which node the UI hands over.
+  The model is a `view` (which pairing is on screen, plus cursor state)
+  and a `stack` of the views it was opened from: `[`/`]` mark a side of
+  the selected row (marks point at `sidetree` nodes, so they survive any
+  navigation), `p` pairs them and pushes, `←` past the top row pops and
+  closes. Level, recursive and filter stay global across pairings — a
+  sub-compare is a different pair of directories, not different
+  preferences. Pane titles come from `sidePath`, each side's own real
+  path, since under a sub-compare a pairing-relative path is a real path
+  in neither pane.
   `View()` runs once per Bubble Tea message — every scan/compare result
   and every spinner tick — so anything it does per row is on a very hot
   path: keep it O(visible rows), never O(subtree). That's why the row

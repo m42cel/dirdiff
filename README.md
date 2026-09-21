@@ -76,13 +76,15 @@ dirdiff [flags] <left-dir> <right-dir>
 | `PgUp` / `PgDn` | Move by page |
 | `Home` / `End` | Jump to first / last entry |
 | `→` / `Enter` | Open the directory under the cursor (both panes navigate together) |
-| `←` / `Backspace` | Go up to the parent directory — at the root, up to both compared roots as a single row |
+| `←` / `Backspace` | Go up to the parent directory — at the root, up to both compared roots as a single row; past that in a sub-compare, back out of it |
 | `l` | Switch the compare level — metadata (size + mtime) ↔ content (byte-for-byte) — remembered until changed again |
 | `r` | Toggle recursive mode on/off — remembered, default on |
 | `f` | Open the row-status filter popup — multi-select Left-only / Right-only / Equal / Different, space to toggle, enter to confirm — remembered like `l`/`r` |
 | `w` | Open the worker-count popup — resize the scan/compare pools live |
 | `c` | Compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or its whole subtree, with `r` on) |
 | `C` | Compare the current directory the same way, whatever the cursor is on and whatever the filter hides |
+| `[` / `]` | Mark the selected row's left / right side as one end of a sub-compare |
+| `p` | Pair the two marks — compare those two directories against each other, whatever their paths |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
 | `x` | Cancel all pending (not yet started) comparisons |
 | `?` | Toggle the help overlay |
@@ -92,6 +94,39 @@ A directory that exists on only one side is still navigable — the
 missing side shows a static placeholder. Existence is shown as soon as a
 directory is listed; metadata/content comparisons only run once you
 trigger them with `c`.
+
+### Sub-compares: pairing two directories at different paths
+
+When a directory has been moved or renamed, it shows up twice and
+unhelpfully: left-only at the old path, right-only at the new one, with
+nothing to say whether the contents actually match. A **sub-compare**
+answers that — pick the two directories and compare them against each
+other directly, whatever their paths.
+
+Both panes always navigate together, so you're never standing in two
+unrelated directories at once. Instead you mark one side at a time:
+
+1. Move to the old path and press `[` to mark its **left** side.
+2. Go find the new path — anywhere in either tree — and press `]` to mark
+   its **right** side.
+3. Press `p`.
+
+The status bar shows what's marked as you go. The sub-compare opens as an
+ordinary view — same panes, same glyphs, same keys — with each pane
+titled by its own real path, which is the only visible difference.
+Press `←` past its top row to leave again. Sub-compares nest: `p` from
+inside one opens another, and `←` comes back to the one you came from.
+
+Marks point at directories, not at rows, so they survive navigating
+anywhere in between. Both must be directories.
+
+A sub-compare costs nothing over subtrees already scanned: listing and
+size/date metadata are read per side and shared, so all that's built is
+the matching between them. Only byte-for-byte content results belong to a
+particular pairing — a verdict about *A vs B* says nothing about *A vs
+C* — which is why a sub-compare is dropped when you leave it, and why
+re-opening the same pair is instant for everything except content you'd
+asked to re-read.
 
 ### Directory totals
 

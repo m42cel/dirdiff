@@ -6,6 +6,7 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/m42cel/dirdiff/internal/pairtree"
 	"github.com/m42cel/dirdiff/internal/scan"
 	"github.com/m42cel/dirdiff/internal/session"
+	"github.com/m42cel/dirdiff/internal/sidetree"
 )
 
 const (
@@ -44,26 +46,51 @@ const (
 	spinnerInterval = 400 * time.Millisecond
 )
 
+// view is one pairing on screen and where the cursor stands in it. A
+// sub-compare pushes a new one and pops back to what it was opened from,
+// so this is exactly the state that is per-view rather than global.
+type view struct {
+	pairing   session.PairingID
+	root      *pairtree.Node // the pairing's root row
+	cursorDir *pairtree.Node
+
+	cursorIdx    int
+	scrollOffset int
+
+	// atRootParent is the one level that isn't a real directory listing
+	// (SPEC.md §4.3.1): standing above the pairing's two directories,
+	// where the only row is the pair itself, so their whole-subtree
+	// totals are readable in the details panel. cursorDir stays the
+	// pairing root throughout — this level has no node of its own, since
+	// the two directories' actual parents are unrelated to each other and
+	// are never listed or compared. In a sub-compare it's also the way
+	// out: ← from there pops back.
+	atRootParent bool
+}
+
 // Model is the root Bubble Tea model.
 type Model struct {
 	sess *session.Session
 
-	// pairing is which pairing the view is showing — the root one over
-	// the two compared roots, until a sub-compare is opened.
-	pairing      session.PairingID
-	cursorDir    *pairtree.Node
-	cursorIdx    int
-	scrollOffset int
-	showHelp     bool
+	// view is the pairing being shown; stack holds the ones it was opened
+	// from, outermost first. The root pairing is always at the bottom and
+	// is never popped.
+	view
+	stack []view
 
-	// atRootParent is the one level that isn't a real directory listing
-	// (SPEC.md §4.3.1): standing above both roots, where the only row is
-	// the pair of compared directories themselves, so their whole-tree
-	// totals are readable in the details panel. cursorDir stays the tree
-	// root throughout — this level has no node of its own, since the two
-	// roots' actual parent directories are unrelated to each other and are
-	// never listed or compared.
-	atRootParent bool
+	// markLeft/markRight are the two ends of a sub-compare being set up
+	// (SPEC.md §4.9): panes navigate in lockstep, so there's no moment at
+	// which the cursor stands in two unrelated directories — you mark one
+	// side at a time, from wherever you are, and pair the marks with 'p'.
+	// They point at sidetree nodes, not at rows, so a mark survives
+	// navigating anywhere and opening or closing any pairing.
+	markLeft, markRight *sidetree.Node
+
+	// note is a one-off line for the status bar — why a keypress did
+	// nothing, usually — shown until the next keypress.
+	note string
+
+	showHelp bool
 
 	// compareLevel and recursive carry over between 'c' presses until
 	// changed again with 'l' / 'r'. Defaults match the CLI's own default
@@ -79,6 +106,9 @@ type Model struct {
 	// from filter itself so cancelling with Esc leaves filter untouched —
 	// filterEditing starts as a copy of filter when the popup opens and
 	// is only copied back into filter on a confirming Enter.
+	// They, and the filter below, are global rather than per view: a
+	// sub-compare is a different pair of directories, not a different
+	// set of preferences about how to compare.
 	filter         FilterSet
 	showFilterMenu bool
 	filterCursor   int
@@ -100,12 +130,12 @@ type Model struct {
 	width, height int
 }
 
-// New builds the initial model bound to sess.
+// New builds the initial model bound to sess, showing the root pairing.
 func New(sess *session.Session) Model {
+	root := sess.Tree()
 	return Model{
 		sess:         sess,
-		pairing:      session.RootPairing,
-		cursorDir:    sess.Tree(),
+		view:         view{pairing: session.RootPairing, root: root, cursorDir: root},
 		compareLevel: diffmodel.SizeMtime,
 		recursive:    true,
 		filter:       defaultFilterSet(),
@@ -299,6 +329,10 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A note explains why the *last* keypress did nothing, so it lives
+	// exactly until the next one.
+	m.note = ""
+
 	switch key {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -347,6 +381,12 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.triggerCompare()
 	case "C":
 		m.triggerCompareDir()
+	case "[":
+		m.mark(diffmodel.Left)
+	case "]":
+		m.mark(diffmodel.Right)
+	case "p":
+		m.openSubCompare()
 	case "n":
 		m.jumpDiff(true)
 	case "N":
@@ -446,13 +486,73 @@ func (m *Model) triggerCompareDir() {
 	m.sess.TriggerCompare(m.pairing, m.cursorDir, m.compareLevel, m.recursive)
 }
 
+// mark records one side of the row under the cursor as an end of a
+// sub-compare (SPEC.md §4.9). It's a no-op, with a note, on a row that
+// has no such side, or on anything but a directory: pairing two files
+// would be a one-row view of no value.
+func (m *Model) mark(sd diffmodel.Side) {
+	visible := m.visibleChildren()
+	if m.cursorIdx >= len(visible) {
+		return
+	}
+	n := visible[m.cursorIdx]
+	sn := n.Side(sd)
+	switch {
+	case sn == nil:
+		m.note = fmt.Sprintf("%s doesn't exist on the %s", m.rowLabel(n, sd), sideLabel(sd))
+	case !sn.IsDir():
+		m.note = "a sub-compare pairs two directories, not files"
+	case sd == diffmodel.Left:
+		m.markLeft = sn
+	default:
+		m.markRight = sn
+	}
+}
+
+// openSubCompare pairs the two marks and pushes the result on the view
+// stack (SPEC.md §4.9). The marks are cleared once it's open, so the
+// next pairing starts from a clean slate.
+func (m *Model) openSubCompare() {
+	if m.markLeft == nil || m.markRight == nil {
+		m.note = "mark a directory on each side first — [ for left, ] for right"
+		return
+	}
+	id, err := m.sess.OpenPairing(m.markLeft, m.markRight)
+	if err != nil {
+		m.note = err.Error()
+		return
+	}
+	p, ok := m.sess.Pairing(id)
+	if !ok {
+		return
+	}
+	m.stack = append(m.stack, m.view)
+	m.view = view{pairing: id, root: p.Root, cursorDir: p.Root}
+	m.markLeft, m.markRight = nil, nil
+	m.sess.Navigate(id, p.Root)
+}
+
+// popSubCompare leaves the current sub-compare for whichever view it was
+// opened from, dropping it (SPEC.md §4.9): a sub-compare lives only
+// while you're in it. Re-entering the same pair rebuilds it from the
+// side trees, which is instant for everything but the bytes.
+func (m *Model) popSubCompare() {
+	if len(m.stack) == 0 {
+		return // the root pairing is the bottom; there's nowhere to go
+	}
+	m.sess.ClosePairing(m.pairing)
+	m.view = m.stack[len(m.stack)-1]
+	m.stack = m.stack[:len(m.stack)-1]
+	m.sess.Navigate(m.pairing, m.cursorDir)
+}
+
 // enter navigates into the directory under the cursor. Only directories
 // are navigable — files aren't "opened" (no content viewer, SPEC.md
 // §10). A directory missing on one side is still navigable as long as it
 // exists on the other (SPEC.md §4.3).
 func (m *Model) enter() {
 	if m.atRootParent {
-		// The only row up there is the root pair itself, so entering it is
+		// The only row up there is the pairing itself, so entering it is
 		// simply the way back down into the normal view.
 		m.atRootParent = false
 		m.cursorIdx = 0
@@ -480,13 +580,17 @@ func (m *Model) enter() {
 func (m *Model) ascend() {
 	parent := m.cursorDir.Parent
 	if parent == nil {
-		// Above the root there's one more level to go up to — the root pair
-		// itself as a single row (SPEC.md §4.3.1) — and nothing above that.
+		// Above the pairing's root there's one more level to go up to —
+		// the pair itself as a single row (SPEC.md §4.3.1). Past that,
+		// a sub-compare leaves for the view it was opened from, and the
+		// root pairing has nowhere left to go.
 		if !m.atRootParent {
 			m.atRootParent = true
 			m.cursorIdx = 0
 			m.scrollOffset = 0
+			return
 		}
+		m.popSubCompare()
 		return
 	}
 	child := m.cursorDir

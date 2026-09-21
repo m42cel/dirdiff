@@ -29,8 +29,12 @@ import (
 type Node struct {
 	Left, Right *sidetree.Node
 
-	Type     diffmodel.EntryType
-	RelPath  string // relative to this pairing's two roots
+	Type diffmodel.EntryType
+	// PairRel is the path of this row relative to the pairing's two
+	// roots — the one path that names it on both sides at once. Each
+	// side's own path below its own tree root is on its side node, and
+	// under a sub-compare the three are all different.
+	PairRel  string
 	Parent   *Node
 	Children []*Node
 
@@ -89,12 +93,6 @@ type Node struct {
 	// side's subtree, not of how the two were matched, so a pair node
 	// reads them straight off its side nodes (see SideTotals).
 	descMatches [diffmodel.RowStatusCount]int32
-}
-
-// NewRoot creates the root node of a pairing over the two given
-// directories, which by construction exist on both sides.
-func NewRoot(left, right *sidetree.Node) *Node {
-	return &Node{Left: left, Right: right, Type: diffmodel.Dir}
 }
 
 // Presence reports which side(s) this row exists on. It's derived from
@@ -299,13 +297,13 @@ func ownContribution(n *Node) statusDelta {
 	return d
 }
 
-// ChildRelPath computes the pairing-relative path of a child named name
+// ChildPairRel computes the pairing-relative path of a child named name
 // under parent.
-func ChildRelPath(parent *Node, name string) string {
-	if parent.RelPath == "" {
+func ChildPairRel(parent *Node, name string) string {
+	if parent.PairRel == "" {
 		return name
 	}
-	return parent.RelPath + "/" + name
+	return parent.PairRel + "/" + name
 }
 
 // childKey is what the two sides are matched by (SPEC.md §3.1): exact
@@ -373,7 +371,7 @@ func Merge(n *Node) (added []*Node) {
 		child := &Node{
 			Left: s.left, Right: s.right,
 			Type:    k.typ,
-			RelPath: ChildRelPath(n, k.name),
+			PairRel: ChildPairRel(n, k.name),
 		}
 		delta.add(linkChild(n, child))
 		added = append(added, child)

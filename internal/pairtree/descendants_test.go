@@ -26,7 +26,7 @@ func countByWalk(n *Node) statusDelta {
 func assertTallies(t *testing.T, n *Node) {
 	t.Helper()
 	if got, want := statusDelta(n.descMatches), countByWalk(n); got != want {
-		t.Fatalf("node %q: descMatches = %v; want %v", n.RelPath, got, want)
+		t.Fatalf("node %q: descMatches = %v; want %v", n.PairRel, got, want)
 	}
 	for _, c := range n.Children {
 		assertTallies(t, c)
@@ -63,7 +63,7 @@ func TestCompareResultMovesTallyBetweenStatuses(t *testing.T) {
 	ApplyCompareResult(file, diffmodel.SizeMtime, diffmodel.Same, nil)
 	for _, n := range []*Node{sub, f.root} {
 		if got := n.DescendantsWithStatus(diffmodel.RowEqual); got != 1 {
-			t.Fatalf("%q equal tally = %d; want 1 — the count must reach every ancestor", n.RelPath, got)
+			t.Fatalf("%q equal tally = %d; want 1 — the count must reach every ancestor", n.PairRel, got)
 		}
 	}
 
@@ -72,10 +72,10 @@ func TestCompareResultMovesTallyBetweenStatuses(t *testing.T) {
 	ApplyCompareResult(file, diffmodel.Checksum, diffmodel.Differs, nil)
 	for _, n := range []*Node{sub, f.root} {
 		if got := n.DescendantsWithStatus(diffmodel.RowEqual); got != 0 {
-			t.Errorf("%q equal tally = %d; want 0 once the row differs", n.RelPath, got)
+			t.Errorf("%q equal tally = %d; want 0 once the row differs", n.PairRel, got)
 		}
 		if got := n.DescendantsWithStatus(diffmodel.RowDifferent); got != 1 {
-			t.Errorf("%q different tally = %d; want 1", n.RelPath, got)
+			t.Errorf("%q different tally = %d; want 1", n.PairRel, got)
 		}
 	}
 	assertTallies(t, f.root)

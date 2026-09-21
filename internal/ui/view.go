@@ -269,7 +269,7 @@ func (m Model) paneTitle(root string) string {
 	if m.atRootParent {
 		return filepath.Dir(root)
 	}
-	return displayPath(root, m.cursorDir.RelPath)
+	return displayPath(root, m.cursorDir.PairRel)
 }
 
 func styleIfNotEmpty(s string, style lipgloss.Style) string {
@@ -434,7 +434,7 @@ func (m Model) renderDetails() string {
 // own — it *is* the two compared directories — so above the root (SPEC.md
 // §4.3.1) it's titled with both root paths instead of an empty name.
 func (m Model) detailsTitle(n *pairtree.Node) string {
-	if n == m.sess.Tree {
+	if n == m.sess.Tree() {
 		// Two full paths can easily outrun the panel, which has to stay
 		// exactly detailsContentLines tall (see padDetailsLines).
 		return truncate(fmt.Sprintf("%s ↔ %s  [compared roots]", m.sess.LeftRoot, m.sess.RightRoot), m.width)

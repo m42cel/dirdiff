@@ -55,15 +55,17 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   (spec §8.3): descendants of the focus path always pop before anything
   else, and within each group, closer jobs pop first. `SetFocus` (one
   focus for the whole queue) and `SetFoci` (one per key namespace, for a
-  queue whose keys span unconnected trees — the listing queue's `L/…` and
-  `R/…`) change the focus and re-heapify (`heap.Init`, O(n)) to reorder
+  queue whose keys span unconnected trees) change the focus and
+  re-heapify (`heap.Init`, O(n)) to reorder
   already-queued jobs — cheap enough since it only runs on user
   navigation, not per-job. A key is only ever ranked against the focus
   sharing its own namespace: two side trees share no ancestor, so a
   "distance" across them is the sum of two depths, not a tree distance.
   `Upsert` merges a job already queued under the
-  same key instead of duplicating it; `Pop`/`Done` track in-flight jobs
-  so `IsPending` reports queued-or-running for the UI's pending glyph.
+  same key instead of duplicating it; `ClearPrefix` is `Clear` over one
+  namespace, for retiring a closed pairing's jobs without touching
+  anything shared; `Pop`/`Done` track in-flight jobs so `IsPending`
+  reports queued-or-running.
 - **`internal/scan`** — pure filesystem I/O (`DoList`, `DoStat`,
   `DoCompare`). Every function takes absolute paths and returns a result;
   nothing here touches shared state, so it's safe to call concurrently
@@ -89,13 +91,20 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   identifies exactly one entry, so the file/directory collision that
   needed one only ever existed because a merged tree overlaid two
   filesystems.
-- **`internal/pairtree`** — the merged `Node` tree of one *pairing* (two
-  directories matched entry by entry) and the rollup logic (spec §3.3).
+- **`internal/pairtree`** — a `Pairing` (two directories matched entry
+  by entry — normally the two roots, under a sub-compare any two at all),
+  its merged `Node` tree and the rollup logic (spec §3.3). `Pairing`
+  owns the indexes into its tree: `RowFor` maps a side node to the row
+  showing it (how a listing or metadata result fans out), `Row` maps a
+  pair-relative path to a both-sided row (how a content result is routed
+  back). A row's `PairRel` is relative to *that pairing's* roots, so
+  under a sub-compare it differs from both sides' own paths.
   A node holds `Left`/`Right *sidetree.Node` rather than a name or
   metadata of its own; `Presence`/`Name`/`Listed`/`SideTotals` are
   derived from those. `Merge`, `ApplyMetadata` and `ApplyCompareResult`
-  are the only mutators: `Merge` extends a directory's children from the
-  union of its
+  are the only mutators: `Merge` (via `Pairing.Merge`, which also
+  indexes and descends into already-listed children) extends a
+  directory's children from the union of its
   two sides by `(name, type)` — **gated on every side it has being
   listed**, so a row's `Presence` is fixed at creation and never mutates
   — `ApplyMetadata` records the metadata verdict once both sides of a row
@@ -134,9 +143,17 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   land, the same way `PendingRecursiveLevel` is re-checked on a listing.
   The two pools divide **ambient discovery** (listing) from **triggered
   examination** (stat + content), so `x` cancels stat work too; the
-  examination queue therefore holds keys from two namespaces at once
-  (`L/…`/`R/…` for stats, `p/…` for this pairing's content jobs) and
+  examination queue therefore holds keys from several namespaces at once
+  (`L/…`/`R/…` for stats, `p<id>/…` for each pairing's content jobs) and
   `CancelPendingCompares` routes each dropped key by its prefix.
+  `OpenPairing`/`ClosePairing` manage sub-compares: opening one over
+  already-scanned subtrees costs no I/O (the sides are shared, only the
+  matching is new), closing one drops its rows, its content verdicts and
+  its queued jobs via `ClearPrefix`, and a result arriving for a closed
+  pairing is dropped rather than applied. Listing and metadata results
+  fan out to *every* open pairing covering the touched node; a content
+  result goes to the one that asked for it, which is why it travels as a
+  `session.CompareResult` rather than a bare `scan.CompareOutcome`.
   Framework-agnostic on purpose: it exposes plain channels
   (`ListResults()`/`CompareResults()`), not `tea.Cmd`. A recursive
   compare trigger arms *both* the target directory and its children

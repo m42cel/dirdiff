@@ -80,7 +80,7 @@ func TestCompareAtRootParentTargetsTheRoots(t *testing.T) {
 	}
 	m = press(t, m, "c")
 
-	if !sess.Tree.ExaminePending() {
+	if !sess.Tree().ExaminePending() {
 		t.Fatal("c above the roots examined nothing; want the root pair compared")
 	}
 }

@@ -48,6 +48,9 @@ const (
 type Model struct {
 	sess *session.Session
 
+	// pairing is which pairing the view is showing — the root one over
+	// the two compared roots, until a sub-compare is opened.
+	pairing      session.PairingID
 	cursorDir    *pairtree.Node
 	cursorIdx    int
 	scrollOffset int
@@ -101,7 +104,8 @@ type Model struct {
 func New(sess *session.Session) Model {
 	return Model{
 		sess:         sess,
-		cursorDir:    sess.Tree,
+		pairing:      session.RootPairing,
+		cursorDir:    sess.Tree(),
 		compareLevel: diffmodel.SizeMtime,
 		recursive:    true,
 		filter:       defaultFilterSet(),
@@ -118,7 +122,7 @@ func (m Model) Init() tea.Cmd {
 
 type listResultMsg struct{ r scan.ListResult }
 type statResultMsg struct{ r scan.StatResult }
-type compareResultMsg struct{ r scan.CompareOutcome }
+type compareResultMsg struct{ r session.CompareResult }
 type spinnerTickMsg struct{}
 
 func waitListResult(ch <-chan scan.ListResult) tea.Cmd {
@@ -141,7 +145,7 @@ func waitStatResult(ch <-chan scan.StatResult) tea.Cmd {
 	}
 }
 
-func waitCompareResult(ch <-chan scan.CompareOutcome) tea.Cmd {
+func waitCompareResult(ch <-chan session.CompareResult) tea.Cmd {
 	return func() tea.Msg {
 		r, ok := <-ch
 		if !ok {
@@ -431,7 +435,7 @@ func (m *Model) triggerCompare() {
 	if m.cursorIdx >= len(visible) {
 		return
 	}
-	m.sess.TriggerCompare(visible[m.cursorIdx], m.compareLevel, m.recursive)
+	m.sess.TriggerCompare(m.pairing, visible[m.cursorIdx], m.compareLevel, m.recursive)
 }
 
 // triggerCompareDir runs the same settings on the whole directory being
@@ -439,7 +443,7 @@ func (m *Model) triggerCompare() {
 // filter is a view concern, and a recursive trigger reaches hidden
 // descendants anyway.
 func (m *Model) triggerCompareDir() {
-	m.sess.TriggerCompare(m.cursorDir, m.compareLevel, m.recursive)
+	m.sess.TriggerCompare(m.pairing, m.cursorDir, m.compareLevel, m.recursive)
 }
 
 // enter navigates into the directory under the cursor. Only directories
@@ -453,7 +457,7 @@ func (m *Model) enter() {
 		m.atRootParent = false
 		m.cursorIdx = 0
 		m.scrollOffset = 0
-		m.sess.Navigate(m.cursorDir)
+		m.sess.Navigate(m.pairing, m.cursorDir)
 		return
 	}
 	visible := m.visibleChildren()
@@ -467,7 +471,7 @@ func (m *Model) enter() {
 	m.cursorDir = target
 	m.cursorIdx = 0
 	m.scrollOffset = 0
-	m.sess.Navigate(target)
+	m.sess.Navigate(m.pairing, target)
 }
 
 // ascend moves to the parent directory, restoring the cursor to the
@@ -496,7 +500,7 @@ func (m *Model) ascend() {
 	}
 	m.scrollOffset = 0
 	m.ensureCursorVisible()
-	m.sess.Navigate(parent)
+	m.sess.Navigate(m.pairing, parent)
 }
 
 // jumpDiff moves the cursor to the next (or previous) visible row in the

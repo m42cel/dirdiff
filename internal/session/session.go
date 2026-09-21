@@ -9,6 +9,8 @@
 package session
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -32,10 +34,32 @@ type side struct {
 // same kind of work from the user's point of view — I/O asked for by a
 // trigger, which 'x' cancels — as opposed to the ambient listing that
 // keeps navigation responsive.
+//
+// A stat belongs to a side; a comparison belongs to a pairing, and
+// carries which one so its result can be routed back to the right tree —
+// or dropped, if that pairing has since been closed.
 type examineJob struct {
 	isStat  bool
 	stat    scan.StatJob
+	pairing PairingID
 	compare scan.CompareJob
+}
+
+// PairingID names one open pairing. The root pairing over the two
+// compared roots is always RootPairing; sub-compares (SPEC.md §4.9) get
+// the ids after it, never reused, so a result from a closed pairing is
+// recognizably stale rather than landing in whatever took its place.
+type PairingID int
+
+const RootPairing PairingID = 0
+
+// CompareResult is a finished content comparison and the pairing that
+// asked for it. A byte-for-byte verdict is a statement about a *pair* of
+// files, so it means nothing without knowing which pairing's row those
+// two files were.
+type CompareResult struct {
+	Pairing PairingID
+	scan.CompareOutcome
 }
 
 // Session holds everything needed to scan and compare two directory
@@ -48,21 +72,20 @@ type Session struct {
 	// however many pairings end up covering it.
 	sides [2]*side
 
-	// Tree is the root pairing: the two roots matched entry by entry.
-	Tree *pairtree.Node
-
-	// pairOf maps a side node to the row pairing it, per side, so a
-	// listing result can be fanned out from the side tree it landed in to
-	// the pairing that shows it in O(1). A side node appears in at most
-	// one row of a given pairing.
-	pairOf [2]map[*sidetree.Node]*pairtree.Node
+	// pairings holds every open pairing, the root one and whatever
+	// sub-compares are live (SPEC.md §4.9). A listing or metadata result
+	// fans out to all of them; a content comparison belongs to exactly
+	// one. nextPairing never goes backwards, so a closed pairing's id is
+	// never handed out again.
+	pairings    map[PairingID]*pairtree.Pairing
+	nextPairing PairingID
 
 	listQ    *workqueue.Queue[scan.ListJob]
 	examineQ *workqueue.Queue[examineJob]
 
 	listResults chan scan.ListResult
 	statResults chan scan.StatResult
-	cmpResults  chan scan.CompareOutcome
+	cmpResults  chan CompareResult
 
 	// listTarget/cmpTarget are each pool's configured size (SPEC.md §8.2's
 	// --scan-workers/--compare-workers, adjustable at runtime); listLive/
@@ -93,29 +116,25 @@ type Session struct {
 // defensible default of the two.
 func New(leftRoot, rightRoot string, listWorkers, compareWorkers int, autoLevel diffmodel.CompareLevel) *Session {
 	left, right := sidetree.NewTree(diffmodel.Left), sidetree.NewTree(diffmodel.Right)
-	root := pairtree.NewRoot(left.Root, right.Root)
 	s := &Session{
 		LeftRoot: leftRoot, RightRoot: rightRoot,
 		sides: [2]*side{
 			diffmodel.Left:  {root: leftRoot, tree: left},
 			diffmodel.Right: {root: rightRoot, tree: right},
 		},
-		Tree: root,
-		pairOf: [2]map[*sidetree.Node]*pairtree.Node{
-			diffmodel.Left:  {left.Root: root},
-			diffmodel.Right: {right.Root: root},
-		},
-		listQ:    workqueue.New[scan.ListJob](),
-		examineQ: workqueue.New[examineJob](),
+		pairings:    map[PairingID]*pairtree.Pairing{RootPairing: pairtree.NewPairing(left.Root, right.Root)},
+		nextPairing: RootPairing + 1,
+		listQ:       workqueue.New[scan.ListJob](),
+		examineQ:    workqueue.New[examineJob](),
 		// Buffered so workers never block handing off a result while the
 		// UI is busy processing the previous one.
 		listResults: make(chan scan.ListResult, 64),
 		statResults: make(chan scan.StatResult, 64),
-		cmpResults:  make(chan scan.CompareOutcome, 64),
+		cmpResults:  make(chan CompareResult, 64),
 	}
 
 	if autoLevel != diffmodel.NotCompared {
-		root.PendingRecursiveLevel = autoLevel
+		s.Tree().PendingRecursiveLevel = autoLevel
 	}
 
 	s.SetListWorkers(listWorkers)
@@ -130,9 +149,60 @@ func New(leftRoot, rightRoot string, listWorkers, compareWorkers int, autoLevel 
 
 // ListResults, StatResults and CompareResults are consumed by package ui
 // to build long-lived listening tea.Cmds.
-func (s *Session) ListResults() <-chan scan.ListResult        { return s.listResults }
-func (s *Session) StatResults() <-chan scan.StatResult        { return s.statResults }
-func (s *Session) CompareResults() <-chan scan.CompareOutcome { return s.cmpResults }
+func (s *Session) ListResults() <-chan scan.ListResult  { return s.listResults }
+func (s *Session) StatResults() <-chan scan.StatResult  { return s.statResults }
+func (s *Session) CompareResults() <-chan CompareResult { return s.cmpResults }
+
+// Pairing returns an open pairing, if it's still open.
+func (s *Session) Pairing(id PairingID) (*pairtree.Pairing, bool) {
+	p, ok := s.pairings[id]
+	return p, ok
+}
+
+// Tree is the root pairing's root row: the two compared roots matched
+// against each other, which is where the UI starts and the one pairing
+// that is never closed.
+func (s *Session) Tree() *pairtree.Node { return s.pairings[RootPairing].Root }
+
+// OpenPairing starts a sub-compare of two directories at unrelated paths
+// (SPEC.md §4.9) and returns its id. It costs no I/O over subtrees the
+// background scan has already covered: the two sides are shared with
+// every other pairing, so all this builds is the matching between them —
+// and anything not listed yet is already queued by the ambient scan, so
+// nothing new is enqueued either. What the new pairing owns, and has to
+// redo for itself, is content verdicts.
+func (s *Session) OpenPairing(left, right *sidetree.Node) (PairingID, error) {
+	switch {
+	case left == nil || right == nil:
+		return 0, fmt.Errorf("a sub-compare needs a directory on each side")
+	case !left.IsDir() || !right.IsDir():
+		return 0, fmt.Errorf("a sub-compare pairs two directories, not files")
+	}
+	id := s.nextPairing
+	s.nextPairing++
+	s.pairings[id] = pairtree.NewPairing(left, right)
+	return id, nil
+}
+
+// ClosePairing drops a pairing and everything only it owned: its rows,
+// their content verdicts, and its still-queued content jobs. The two
+// side trees are untouched — listing and metadata are shared, so
+// reopening the same pair is instant for everything but the bytes. Jobs
+// already in flight run to completion (the same "let it finish" policy
+// as CancelPendingCompares, SPEC.md §5.4) and their results are dropped
+// on arrival. The root pairing is never closed.
+func (s *Session) ClosePairing(id PairingID) {
+	if id == RootPairing {
+		return
+	}
+	if _, ok := s.pairings[id]; !ok {
+		return
+	}
+	delete(s.pairings, id)
+	// Its pending counts die with its tree, so the dropped keys need no
+	// unwinding — unlike CancelPendingCompares, where the rows live on.
+	s.examineQ.ClearPrefix(pairNS(id))
+}
 
 // Close shuts down both worker pools. Safe to call once, e.g. after the
 // Bubble Tea program exits.
@@ -167,7 +237,7 @@ func (s *Session) examineWorkerLoop() {
 		}
 		outcome := scan.DoCompare(job.compare)
 		s.examineQ.Done(key)
-		s.cmpResults <- outcome
+		s.cmpResults <- CompareResult{Pairing: job.pairing, CompareOutcome: outcome}
 	}
 }
 
@@ -246,18 +316,26 @@ func (s *Session) CompareWorkers() int { return int(s.cmpTarget.Load()) }
 //
 // Listing and metadata can share a spelling because they live in
 // different queues, and within the examination queue a side key can
-// never collide with a pairing key.
-const rootPairingNS = "p"
+// never collide with a pairing key: the side namespaces are "L" and "R",
+// a pairing's is "p" followed by its id.
+const (
+	leftNS       = "L"
+	rightNS      = "R"
+	pairNSPrefix = "p"
+)
 
-func sideKey(sd diffmodel.Side, relPath string) string {
-	ns := "L"
+func sideNS(sd diffmodel.Side) string {
 	if sd == diffmodel.Right {
-		ns = "R"
+		return rightNS
 	}
-	return joinKey(ns, relPath)
+	return leftNS
 }
 
-func pairKey(relPath string) string { return joinKey(rootPairingNS, relPath) }
+func pairNS(id PairingID) string { return pairNSPrefix + strconv.Itoa(int(id)) }
+
+func sideKey(sd diffmodel.Side, relPath string) string { return joinKey(sideNS(sd), relPath) }
+
+func pairKey(id PairingID, pairRel string) string { return joinKey(pairNS(id), pairRel) }
 
 func joinKey(ns, relPath string) string {
 	if relPath == "" {
@@ -298,19 +376,19 @@ func (s *Session) enqueueStat(sd diffmodel.Side, n *sidetree.Node) {
 	}
 }
 
-// Node looks up the pairing row at relPath, if it's been discovered yet.
-// A file and a directory of the same name are two unrelated rows sharing
-// one path (SPEC.md §3.1) — only one of the two can be both-sided, and
-// only then, so this resolves a compare job's path unambiguously; asked
-// for a colliding path it answers with the left side's row.
+// Node looks up the root pairing's row at relPath, if it's been
+// discovered yet. A file and a directory of the same name are two
+// unrelated rows sharing one path (SPEC.md §3.1); asked for such a path
+// this answers with the left side's row.
 func (s *Session) Node(relPath string) (*pairtree.Node, bool) {
+	root := s.pairings[RootPairing]
 	for _, sd := range diffmodel.Sides {
 		sn, ok := s.sides[sd].tree.Index[relPath]
 		if !ok {
 			continue
 		}
-		if p, ok := s.pairOf[sd][sn]; ok {
-			return p, true
+		if n, ok := root.RowFor(sd, sn); ok {
+			return n, true
 		}
 	}
 	return nil, false
@@ -338,13 +416,17 @@ func (s *Session) OnListResult(r scan.ListResult) {
 		}
 	}
 
-	p, ok := s.pairOf[r.Side][n]
-	if !ok {
-		return
-	}
-	s.merge(p)
-	if p.PendingRecursiveLevel != diffmodel.NotCompared {
-		s.armRecursive(p.Children, p.PendingRecursiveLevel)
+	// Every open pairing covering this directory shows the new entries,
+	// each matching them against its own other side.
+	for id, p := range s.pairings {
+		row, ok := p.RowFor(r.Side, n)
+		if !ok {
+			continue
+		}
+		p.Merge(row)
+		if row.PendingRecursiveLevel != diffmodel.NotCompared {
+			s.armRecursive(id, row.Children, row.PendingRecursiveLevel)
+		}
 	}
 }
 
@@ -363,46 +445,33 @@ func (s *Session) OnStatResult(r scan.StatResult) {
 	sidetree.ApplyStat(n, sidetree.Stat{Size: r.Size, Mtime: r.Mtime, LinkTarget: r.LinkTarget, Err: r.Err})
 	sidetree.AdjustPendingStat(n, -1)
 
-	p, ok := s.pairOf[r.Side][n]
+	// One read, every pairing: this side's size is the same fact in all
+	// of them, though what each concludes from it depends on the other
+	// side it happens to be matched against.
+	for id, p := range s.pairings {
+		row, ok := p.RowFor(r.Side, n)
+		if !ok {
+			continue
+		}
+		pairtree.ApplyMetadata(row)
+		if row.ArmedLevel != diffmodel.NotCompared {
+			s.examine(id, row, row.ArmedLevel)
+		}
+	}
+}
+
+// OnCompareResult applies a completed content comparison to the pairing
+// that asked for it, and drops it if that pairing has since been closed
+// — its rows are gone, and the verdict says nothing about any other
+// pairing's. It carries no metadata: a size is a fact about one side's
+// file, which a stat job reads once into that side's tree and every
+// pairing over it then shares.
+func (s *Session) OnCompareResult(r CompareResult) {
+	p, ok := s.pairings[r.Pairing]
 	if !ok {
 		return
 	}
-	pairtree.ApplyMetadata(p)
-	if p.ArmedLevel != diffmodel.NotCompared {
-		s.examine(p, p.ArmedLevel)
-	}
-}
-
-// merge builds whatever rows p's two sides now allow and indexes them,
-// descending into any new directory row whose own two sides happen to be
-// listed already — a row created after its subtree was scanned has no
-// listing result left to arrive and would otherwise stay empty forever.
-func (s *Session) merge(p *pairtree.Node) {
-	for _, c := range pairtree.Merge(p) {
-		for _, sd := range diffmodel.Sides {
-			if sn := sideNode(c, sd); sn != nil {
-				s.pairOf[sd][sn] = c
-			}
-		}
-		if c.IsDir() {
-			s.merge(c)
-		}
-	}
-}
-
-func sideNode(p *pairtree.Node, sd diffmodel.Side) *sidetree.Node {
-	if sd == diffmodel.Right {
-		return p.Right
-	}
-	return p.Left
-}
-
-// OnCompareResult applies a completed content comparison to the
-// pairing. It carries no metadata: a size is a fact about one side's
-// file, which a stat job reads once into that side's tree and every
-// pairing over it then shares.
-func (s *Session) OnCompareResult(r scan.CompareOutcome) {
-	n, ok := s.Node(r.RelPath)
+	n, ok := p.Row(r.RelPath)
 	if !ok {
 		return
 	}
@@ -417,13 +486,17 @@ func (s *Session) OnCompareResult(r scan.CompareOutcome) {
 // ordered by tree-edge distance. Moving the cursor within an
 // already-listed directory should not call this — only changing the
 // current directory does.
-func (s *Session) Navigate(to *pairtree.Node) {
+//
+// The two panes now stand in two unrelated paths, so what the user is
+// looking at takes more than one path to express: each namespace gets
+// its own focus and is measured against that one alone.
+func (s *Session) Navigate(id PairingID, to *pairtree.Node) {
 	if to == nil {
 		return
 	}
 	var foci []string
 	for _, sd := range diffmodel.Sides {
-		sn := sideNode(to, sd)
+		sn := to.Side(sd)
 		if sn == nil {
 			continue
 		}
@@ -433,9 +506,10 @@ func (s *Session) Navigate(to *pairtree.Node) {
 		foci = append(foci, sideKey(sd, sn.RelPath))
 	}
 	s.listQ.SetFoci(foci...)
-	// The examination queue holds both namespaces at once — per-side
-	// stats and this pairing's content jobs — so it gets all three foci.
-	s.examineQ.SetFoci(append(foci, pairKey(to.RelPath))...)
+	// The examination queue holds both kinds of namespace at once —
+	// per-side stats and this pairing's content jobs — so it gets all
+	// three foci.
+	s.examineQ.SetFoci(append(foci, pairKey(id, to.PairRel))...)
 }
 
 // TriggerCompare starts a comparison at level for target (SPEC.md §5.2).
@@ -447,12 +521,12 @@ func (s *Session) Navigate(to *pairtree.Node) {
 // OnListResult). Either way, target is at or under the current
 // navigation focus, so these jobs already sort ahead of unrelated
 // background work (SPEC.md §8.3) without needing a priority of their own.
-func (s *Session) TriggerCompare(target *pairtree.Node, level diffmodel.CompareLevel, recursive bool) {
+func (s *Session) TriggerCompare(id PairingID, target *pairtree.Node, level diffmodel.CompareLevel, recursive bool) {
 	if target == nil {
 		return
 	}
 	if !target.IsDir() {
-		s.examine(target, level)
+		s.examine(id, target, level)
 		return
 	}
 	dir := target
@@ -464,12 +538,12 @@ func (s *Session) TriggerCompare(target *pairtree.Node, level diffmodel.CompareL
 		if level > dir.PendingRecursiveLevel {
 			dir.PendingRecursiveLevel = level
 		}
-		s.armRecursive(dir.Children, level)
+		s.armRecursive(id, dir.Children, level)
 		return
 	}
 	for _, c := range dir.Children {
 		if !c.IsDir() {
-			s.examine(c, level)
+			s.examine(id, c, level)
 		}
 	}
 }
@@ -482,18 +556,18 @@ func (s *Session) TriggerCompare(target *pairtree.Node, level diffmodel.CompareL
 // take part in: a metadata read has a counterpart-free half that's worth
 // doing on its own, which is what finally lets a one-sided subtree
 // report a size instead of "size ?" forever (SPEC.md §4.2).
-func (s *Session) armRecursive(nodes []*pairtree.Node, level diffmodel.CompareLevel) {
+func (s *Session) armRecursive(id PairingID, nodes []*pairtree.Node, level diffmodel.CompareLevel) {
 	for _, c := range nodes {
 		if c.IsDir() {
 			if level > c.PendingRecursiveLevel {
 				c.PendingRecursiveLevel = level
 			}
 			if c.Listed() {
-				s.armRecursive(c.Children, level)
+				s.armRecursive(id, c.Children, level)
 			}
 			continue
 		}
-		s.examine(c, level)
+		s.examine(id, c, level)
 	}
 }
 
@@ -507,12 +581,12 @@ func (s *Session) armRecursive(nodes []*pairtree.Node, level diffmodel.CompareLe
 // size-matching files ever reach the compare pool. A row whose metadata
 // isn't in yet records what it was asked for and is re-examined when
 // its stat results land.
-func (s *Session) examine(n *pairtree.Node, level diffmodel.CompareLevel) {
+func (s *Session) examine(id PairingID, n *pairtree.Node, level diffmodel.CompareLevel) {
 	if n.IsDir() || n.Level >= level {
 		return // already have an equal-or-deeper result (SPEC.md §5.3)
 	}
 	for _, sd := range diffmodel.Sides {
-		if sn := sideNode(n, sd); sn != nil {
+		if sn := n.Side(sd); sn != nil {
 			s.enqueueStat(sd, sn)
 		}
 	}
@@ -528,18 +602,18 @@ func (s *Session) examine(n *pairtree.Node, level diffmodel.CompareLevel) {
 		pairtree.ApplyCompareResult(n, level, diffmodel.Differs, nil)
 		return
 	}
-	s.enqueueCompare(n, level)
+	s.enqueueCompare(id, n, level)
 }
 
-func (s *Session) enqueueCompare(n *pairtree.Node, level diffmodel.CompareLevel) {
-	job := examineJob{compare: scan.CompareJob{
-		RelPath:  n.RelPath,
+func (s *Session) enqueueCompare(id PairingID, n *pairtree.Node, level diffmodel.CompareLevel) {
+	job := examineJob{pairing: id, compare: scan.CompareJob{
+		RelPath:  n.PairRel,
 		LeftAbs:  scan.AbsPath(s.sides[diffmodel.Left].root, n.Left.RelPath),
 		RightAbs: scan.AbsPath(s.sides[diffmodel.Right].root, n.Right.RelPath),
 		Type:     n.Type,
 		Level:    level,
 	}}
-	created := s.examineQ.Upsert(pairKey(n.RelPath), job, func(old examineJob) examineJob {
+	created := s.examineQ.Upsert(pairKey(id, n.PairRel), job, func(old examineJob) examineJob {
 		if level > old.compare.Level {
 			old.compare.Level = level
 		}
@@ -560,18 +634,27 @@ func (s *Session) enqueueCompare(n *pairtree.Node, level diffmodel.CompareLevel)
 func (s *Session) CancelPendingCompares() {
 	for _, key := range s.examineQ.Clear() {
 		ns, rel, _ := strings.Cut(key, "/")
-		if ns == rootPairingNS {
-			if n, ok := s.Node(rel); ok {
+		switch ns {
+		case leftNS, rightNS:
+			sd := diffmodel.Left
+			if ns == rightNS {
+				sd = diffmodel.Right
+			}
+			if sn, ok := s.sides[sd].tree.Index[rel]; ok {
+				sidetree.AdjustPendingStat(sn, -1)
+			}
+		default:
+			id, err := strconv.Atoi(strings.TrimPrefix(ns, pairNSPrefix))
+			if err != nil {
+				continue
+			}
+			p, ok := s.pairings[PairingID(id)]
+			if !ok {
+				continue // its rows are gone; nothing left to unwind
+			}
+			if n, ok := p.Row(rel); ok {
 				pairtree.AdjustPendingCompare(n, -1)
 			}
-			continue
-		}
-		sd := diffmodel.Left
-		if ns == "R" {
-			sd = diffmodel.Right
-		}
-		if sn, ok := s.sides[sd].tree.Index[rel]; ok {
-			sidetree.AdjustPendingStat(sn, -1)
 		}
 	}
 }

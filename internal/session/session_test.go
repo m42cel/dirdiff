@@ -88,12 +88,12 @@ func TestRecursiveTriggerReachesLaterDiscoveredDescendants(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
 	// "sub" is very likely not listed yet at this point — sub/f.txt isn't
 	// even a node yet — which is exactly the case this test exercises:
 	// a recursive trigger must still reach it once listing catches up.
-	s.TriggerCompare(s.Tree, diffmodel.Checksum, true)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, true)
 
 	pump(t, s, 5*time.Second, func() bool {
 		n, ok := s.Node("sub/f.txt")
@@ -116,7 +116,7 @@ func TestRecursiveTriggerOnNotYetListedDirectoryStillArms(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 	sub, ok := s.Node("sub")
 	if !ok {
 		t.Fatal("sub not found")
@@ -126,8 +126,8 @@ func TestRecursiveTriggerOnNotYetListedDirectoryStillArms(t *testing.T) {
 	// compare before sub's own listing has completed: sub.Children is
 	// still empty right now, since nothing has been pumped since root was
 	// listed. The trigger must not be silently lost.
-	s.Navigate(sub)
-	s.TriggerCompare(sub, diffmodel.Checksum, true)
+	s.Navigate(RootPairing, sub)
+	s.TriggerCompare(RootPairing, sub, diffmodel.Checksum, true)
 
 	pump(t, s, 5*time.Second, func() bool {
 		n, ok := s.Node("sub/f.txt")
@@ -170,6 +170,38 @@ func drainPending(t *testing.T, s *Session) {
 	new(counts).drain(t, s)
 }
 
+// settle pumps until both queues are idle and stay idle once everything
+// in flight has landed, so a test can measure what a later action costs
+// rather than what the background scan was still doing.
+func settle(t *testing.T, s *Session) {
+	t.Helper()
+	idle := func() bool {
+		st := s.Stats()
+		return st.ListPending == 0 && st.ListActive == 0 && st.CmpPending == 0 && st.CmpActive == 0
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		if idle() {
+			// A result still sitting in a channel can enqueue follow-up
+			// work, so an idle queue isn't settled until those are applied.
+			drainPending(t, s)
+			if idle() {
+				return
+			}
+		}
+		select {
+		case r := <-s.ListResults():
+			s.OnListResult(r)
+		case r := <-s.StatResults():
+			s.OnStatResult(r)
+		case r := <-s.CompareResults():
+			s.OnCompareResult(r)
+		case <-deadline:
+			t.Fatal("timed out waiting for the session to settle")
+		}
+	}
+}
+
 func TestNonRecursiveTriggerOnlyAffectsDirectChildren(t *testing.T) {
 	left, right := t.TempDir(), t.TempDir()
 	mustWrite(t, filepath.Join(left, "top.txt"), "same")
@@ -187,7 +219,7 @@ func TestNonRecursiveTriggerOnlyAffectsDirectChildren(t *testing.T) {
 		return ok
 	})
 
-	s.TriggerCompare(s.Tree, diffmodel.Checksum, false)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, false)
 
 	pump(t, s, 5*time.Second, func() bool {
 		n, _ := s.Node("top.txt")
@@ -216,13 +248,13 @@ func TestTriggerOnASingleFileComparesOnlyThatFile(t *testing.T) {
 	s := New(left, right, 2, 2, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
 	wanted, ok := s.Node("wanted.txt")
 	if !ok {
 		t.Fatal("wanted.txt not found")
 	}
-	s.TriggerCompare(wanted, diffmodel.Checksum, true) // recursive means nothing for a file
+	s.TriggerCompare(RootPairing, wanted, diffmodel.Checksum, true) // recursive means nothing for a file
 
 	pump(t, s, 5*time.Second, func() bool { return wanted.Level == diffmodel.Checksum })
 	drainPending(t, s)
@@ -247,9 +279,9 @@ func TestCancelPendingComparesDropsQueuedNotActive(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
-	s.TriggerCompare(s.Tree, diffmodel.Checksum, false)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, false)
 	s.CancelPendingCompares()
 
 	if stats := s.Stats(); stats.CmpPending != 0 {
@@ -268,7 +300,7 @@ func TestSubtreePendingListingSettlesToZero(t *testing.T) {
 	s := New(left, right, 2, 2, diffmodel.NotCompared)
 	defer s.Close()
 
-	if l, r := s.Tree.PendingListing(); l == 0 || r == 0 {
+	if l, r := s.Tree().PendingListing(); l == 0 || r == 0 {
 		t.Fatalf("PendingListing = %d/%d right after New(); want both > 0, each root's own listing was just enqueued", l, r)
 	}
 
@@ -278,7 +310,7 @@ func TestSubtreePendingListingSettlesToZero(t *testing.T) {
 	})
 	drainPending(t, s)
 
-	if l, r := s.Tree.PendingListing(); l != 0 || r != 0 {
+	if l, r := s.Tree().PendingListing(); l != 0 || r != 0 {
 		t.Fatalf("PendingListing = %d/%d once the whole tree is listed; want 0/0", l, r)
 	}
 }
@@ -293,7 +325,7 @@ func TestPerSideListingPendingOnOneSidedDirectory(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
 	onlyleft, ok := s.Node("onlyleft")
 	if !ok {
@@ -315,7 +347,7 @@ func TestPerSideListingPendingOnOneSidedDirectory(t *testing.T) {
 	if pendingRight != 0 {
 		t.Fatalf("right PendingListing = %d for a left-only directory; want 0, there's nothing to list on the right", pendingRight)
 	}
-	rootLeft, rootRight := s.Tree.PendingListing()
+	rootLeft, rootRight := s.Tree().PendingListing()
 	if rootRight != 0 {
 		t.Fatalf("root right PendingListing = %d while only a left-only descendant is pending; want 0", rootRight)
 	}
@@ -327,7 +359,7 @@ func TestPerSideListingPendingOnOneSidedDirectory(t *testing.T) {
 	drainPending(t, s)
 
 	pendingLeft, _ = onlyleft.PendingListing()
-	rootLeft, _ = s.Tree.PendingListing()
+	rootLeft, _ = s.Tree().PendingListing()
 	if pendingLeft != 0 || rootLeft != 0 {
 		t.Fatalf("left PendingListing nonzero once onlyleft has settled: onlyleft=%d root=%d", pendingLeft, rootLeft)
 	}
@@ -353,17 +385,17 @@ func TestSubtreePendingCompareTracksAncestorsAndClears(t *testing.T) {
 	if !ok {
 		t.Fatal("sub not found")
 	}
-	if s.Tree.ExaminePending() || sub.ExaminePending() {
+	if s.Tree().ExaminePending() || sub.ExaminePending() {
 		t.Fatal("examination already pending before any compare was triggered")
 	}
 
-	s.TriggerCompare(s.Tree, diffmodel.Checksum, true)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, true)
 
 	// armRecursive enqueues jobs for already-known descendants
 	// synchronously, so the ancestor counts must already be raised here,
 	// before anything is pumped. A content trigger starts with the two
 	// sides' metadata, so what's outstanding right now is the stat pair.
-	if !s.Tree.ExaminePending() || !sub.ExaminePending() {
+	if !s.Tree().ExaminePending() || !sub.ExaminePending() {
 		t.Fatal("no examination pending on root/sub right after TriggerCompare")
 	}
 
@@ -373,8 +405,8 @@ func TestSubtreePendingCompareTracksAncestorsAndClears(t *testing.T) {
 	})
 	drainPending(t, s)
 
-	if s.Tree.ExaminePending() || sub.ExaminePending() {
-		t.Fatalf("examination still pending once the compare has completed: root compare=%d sub compare=%d", s.Tree.PendingCompare, sub.PendingCompare)
+	if s.Tree().ExaminePending() || sub.ExaminePending() {
+		t.Fatalf("examination still pending once the compare has completed: root compare=%d sub compare=%d", s.Tree().PendingCompare, sub.PendingCompare)
 	}
 }
 
@@ -388,9 +420,9 @@ func TestCancelPendingComparesClearsSubtreePendingCompare(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
-	s.TriggerCompare(s.Tree, diffmodel.Checksum, false)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, false)
 	s.CancelPendingCompares()
 
 	// A job already popped by the single worker before cancel ran is
@@ -401,8 +433,8 @@ func TestCancelPendingComparesClearsSubtreePendingCompare(t *testing.T) {
 		return st.CmpPending == 0 && st.CmpActive == 0
 	})
 
-	if s.Tree.PendingCompare != 0 {
-		t.Fatalf("PendingCompare = %d after cancel and drain; want 0", s.Tree.PendingCompare)
+	if s.Tree().PendingCompare != 0 {
+		t.Fatalf("PendingCompare = %d after cancel and drain; want 0", s.Tree().PendingCompare)
 	}
 }
 
@@ -421,10 +453,10 @@ func TestFileDirNameCollisionListingSettles(t *testing.T) {
 	s := New(left, right, 2, 2, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
 	var dirNode, fileNode *pairtree.Node
-	for _, c := range s.Tree.Children {
+	for _, c := range s.Tree().Children {
 		if c.Name() != "clash" {
 			continue
 		}
@@ -456,7 +488,7 @@ func TestFileDirNameCollisionListingSettles(t *testing.T) {
 	if pendingLeft, _ := dirNode.PendingListing(); pendingLeft != 0 {
 		t.Fatalf("dirNode left PendingListing = %d after settling; want 0", pendingLeft)
 	}
-	if rootLeft, _ := s.Tree.PendingListing(); rootLeft != 0 {
+	if rootLeft, _ := s.Tree().PendingListing(); rootLeft != 0 {
 		t.Fatalf("root left PendingListing = %d after settling; want 0", rootLeft)
 	}
 }
@@ -588,7 +620,9 @@ func TestStatResultAfterAContentVerdictKeepsTheVerdict(t *testing.T) {
 		t.Fatal("f.txt not found")
 	}
 
-	s.OnCompareResult(scan.CompareOutcome{RelPath: "f.txt", Level: diffmodel.Checksum, Result: diffmodel.Same})
+	s.OnCompareResult(CompareResult{CompareOutcome: scan.CompareOutcome{
+		RelPath: "f.txt", Level: diffmodel.Checksum, Result: diffmodel.Same,
+	}})
 	for _, sd := range diffmodel.Sides {
 		s.OnStatResult(scan.StatResult{Side: sd, RelPath: "f.txt", Size: 2048, Mtime: time.Unix(int64(sd), 0)})
 	}
@@ -596,7 +630,7 @@ func TestStatResultAfterAContentVerdictKeepsTheVerdict(t *testing.T) {
 	if n.Level != diffmodel.Checksum || n.Result != diffmodel.Same {
 		t.Fatalf("Level=%v Result=%v; want the content verdict kept despite the differing mtimes", n.Level, n.Result)
 	}
-	if left, _ := s.Tree.SideTotals(); left.Size != 2048 || left.SizedFiles != 1 {
+	if left, _ := s.Tree().SideTotals(); left.Size != 2048 || left.SizedFiles != 1 {
 		t.Fatalf("root left totals = %d bytes over %d files; want 2048 over 1", left.Size, left.SizedFiles)
 	}
 }
@@ -614,10 +648,10 @@ func TestCancelPendingComparesDropsQueuedStatJobs(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
-	s.TriggerCompare(s.Tree, diffmodel.SizeMtime, false)
-	if l, _ := s.Tree.PendingStat(); l == 0 {
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.SizeMtime, false)
+	if l, _ := s.Tree().PendingStat(); l == 0 {
 		t.Fatal("left PendingStat = 0 right after a metadata trigger; want the stat jobs counted")
 	}
 	s.CancelPendingCompares()
@@ -632,7 +666,7 @@ func TestCancelPendingComparesDropsQueuedStatJobs(t *testing.T) {
 	})
 	drainPending(t, s)
 
-	if l, r := s.Tree.PendingStat(); l != 0 || r != 0 {
+	if l, r := s.Tree().PendingStat(); l != 0 || r != 0 {
 		t.Fatalf("PendingStat = %d/%d after cancel and drain; want 0/0", l, r)
 	}
 }
@@ -689,10 +723,10 @@ func TestSetCompareWorkersGrowsAndShrinksWithoutLosingWork(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
 	s.SetCompareWorkers(4)
-	s.TriggerCompare(s.Tree, diffmodel.Checksum, false)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, false)
 	s.SetCompareWorkers(1)
 	if got := s.CompareWorkers(); got != 1 {
 		t.Fatalf("CompareWorkers() = %d after SetCompareWorkers(1); want 1", got)

@@ -215,7 +215,7 @@ func TestAscendAboveRootShowsBothRootsAsOneRow(t *testing.T) {
 		t.Fatal("left at the root should go up to the root-pair level")
 	}
 	visible := m.visibleChildren()
-	if len(visible) != 1 || visible[0] != sess.Tree {
+	if len(visible) != 1 || visible[0] != sess.Tree() {
 		t.Fatalf("root-parent level should show exactly the root pair, got %d rows", len(visible))
 	}
 

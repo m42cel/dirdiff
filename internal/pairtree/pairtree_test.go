@@ -16,16 +16,16 @@ func TestMergeBuildsRowsWithPairRelativePaths(t *testing.T) {
 	}
 	// dirs sort first
 	sub := f.root.Children[0]
-	if sub.Name() != "sub" || sub.RelPath != "sub" {
-		t.Errorf("child[0] = %q at %q; want sub", sub.Name(), sub.RelPath)
+	if sub.Name() != "sub" || sub.PairRel != "sub" {
+		t.Errorf("child[0] = %q at %q; want sub", sub.Name(), sub.PairRel)
 	}
 	if sub.Parent != f.root {
 		t.Error("child.Parent not set to the root")
 	}
 
 	f.list(sub, bothF("nested.txt"))
-	if got := sub.Children[0].RelPath; got != "sub/nested.txt" {
-		t.Errorf("RelPath = %q; want %q", got, "sub/nested.txt")
+	if got := sub.Children[0].PairRel; got != "sub/nested.txt" {
+		t.Errorf("PairRel = %q; want %q", got, "sub/nested.txt")
 	}
 }
 
@@ -184,7 +184,7 @@ func TestRollupPropagatesUpwardOnDifference(t *testing.T) {
 
 	for _, n := range []*Node{f.find("a/b/f.txt"), b, a, f.root} {
 		if n.Result != diffmodel.Differs {
-			t.Fatalf("%q Result = %v; want Differs to propagate all the way up", n.RelPath, n.Result)
+			t.Fatalf("%q Result = %v; want Differs to propagate all the way up", n.PairRel, n.Result)
 		}
 	}
 }

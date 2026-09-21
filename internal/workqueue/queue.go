@@ -353,6 +353,35 @@ func (q *Queue[T]) Clear() []string {
 	return keys
 }
 
+// ClearPrefix is Clear over one subtree of keys: it drops every
+// not-yet-started job at prefix or under it, and returns their keys. Used
+// to retire the work belonging to one namespace — a closed pairing's
+// content comparisons, say — while leaving everything else queued.
+// In-flight jobs already popped by a worker are unaffected, and a prefix
+// of "" clears the whole queue, the same as Clear.
+func (q *Queue[T]) ClearPrefix(prefix string) []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var dropped []string
+	kept := q.heap.items[:0]
+	for _, it := range q.heap.items {
+		if isUnder(prefix, it.key) {
+			dropped = append(dropped, it.key)
+			delete(q.byKey, it.key)
+			continue
+		}
+		it.index = len(kept)
+		kept = append(kept, it)
+	}
+	for i := len(kept); i < len(q.heap.items); i++ {
+		q.heap.items[i] = nil // let the dropped items be collected
+	}
+	q.heap.items = kept
+	heap.Init(&q.heap)
+	return dropped
+}
+
 // Close unblocks all workers currently waiting in Pop, which then return
 // ok=false.
 func (q *Queue[T]) Close() {

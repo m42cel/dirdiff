@@ -13,8 +13,9 @@ import (
 // honest about the one thing the merge has to get right — which entries
 // pair up and which stay one-sided.
 type fixture struct {
-	trees [2]*sidetree.Tree
-	root  *Node
+	trees   [2]*sidetree.Tree
+	pairing *Pairing
+	root    *Node
 }
 
 func newFixture() *fixture {
@@ -22,7 +23,8 @@ func newFixture() *fixture {
 		diffmodel.Left:  sidetree.NewTree(diffmodel.Left),
 		diffmodel.Right: sidetree.NewTree(diffmodel.Right),
 	}}
-	f.root = NewRoot(f.trees[diffmodel.Left].Root, f.trees[diffmodel.Right].Root)
+	f.pairing = NewPairing(f.trees[diffmodel.Left].Root, f.trees[diffmodel.Right].Root)
+	f.root = f.pairing.Root
 	return f
 }
 
@@ -87,16 +89,7 @@ func (f *fixture) listSide(dir *Node, sd diffmodel.Side, entries ...entry) {
 	f.merge(dir)
 }
 
-// merge is package session's own recursive merge: whatever rows the two
-// sides now allow, plus any directory row created after its own subtree
-// was already listed.
-func (f *fixture) merge(p *Node) {
-	for _, c := range Merge(p) {
-		if c.IsDir() {
-			f.merge(c)
-		}
-	}
-}
+func (f *fixture) merge(n *Node) { f.pairing.Merge(n) }
 
 // find returns the row at relPath, or nil. A file and a directory of the
 // same name are two rows sharing one path (SPEC.md §3.1); find answers
@@ -105,11 +98,11 @@ func (f *fixture) merge(p *Node) {
 func (f *fixture) find(relPath string) *Node {
 	var walk func(n *Node) *Node
 	walk = func(n *Node) *Node {
-		if n.RelPath == relPath {
+		if n.PairRel == relPath {
 			return n
 		}
 		for _, c := range n.Children {
-			if relPath == c.RelPath || strings.HasPrefix(relPath, c.RelPath+"/") {
+			if relPath == c.PairRel || strings.HasPrefix(relPath, c.PairRel+"/") {
 				if got := walk(c); got != nil {
 					return got
 				}

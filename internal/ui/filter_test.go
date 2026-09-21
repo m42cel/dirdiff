@@ -19,7 +19,7 @@ func setOf(fs ...FilterStatus) FilterSet {
 // row builds a pair node standing on whichever sides presence says it
 // exists on — presence is derived from those two pointers, not stored.
 func row(name string, typ diffmodel.EntryType, presence diffmodel.Presence, result diffmodel.CompareResult) *pairtree.Node {
-	n := &pairtree.Node{Type: typ, RelPath: name, Result: result}
+	n := &pairtree.Node{Type: typ, PairRel: name, Result: result}
 	if presence != diffmodel.RightOnly {
 		n.Left = &sidetree.Node{Name: name, Type: typ, RelPath: name}
 	}

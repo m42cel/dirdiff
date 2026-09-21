@@ -198,6 +198,57 @@ func TestClearDropsOnlyQueuedNotActive(t *testing.T) {
 	}
 }
 
+func TestClearPrefixDropsOnlyThatNamespace(t *testing.T) {
+	q := New[string]()
+	for _, key := range []string{"p1", "p1/a", "p1/deep/b", "p10/a", "L/a", "R/a"} {
+		q.Upsert(key, key, nil)
+	}
+
+	dropped := q.ClearPrefix("p1")
+	if len(dropped) != 3 {
+		t.Fatalf("dropped %v; want p1 and its two descendants — not p10, which merely shares a spelling", dropped)
+	}
+	for _, want := range []string{"p10/a", "L/a", "R/a"} {
+		if !q.IsPending(want) {
+			t.Errorf("%q was dropped; want it left queued", want)
+		}
+	}
+	if q.PendingCount() != 3 {
+		t.Fatalf("PendingCount() = %d; want 3", q.PendingCount())
+	}
+}
+
+// The heap has to survive the removal: what's left must still pop in
+// priority order, not in whatever order the filtered slice happened to
+// leave it in.
+func TestClearPrefixKeepsTheHeapOrdered(t *testing.T) {
+	q := New[string]()
+	for _, key := range []string{"L/x/deep/deeper", "p1/a", "L/x/near", "p1/b", "L/x"} {
+		q.Upsert(key, key, nil)
+	}
+	q.SetFoci("L/x")
+	q.ClearPrefix("p1")
+
+	for _, want := range []string{"L/x", "L/x/near", "L/x/deep/deeper"} {
+		_, key, _ := q.Pop()
+		if key != want {
+			t.Fatalf("Pop() key = %q; want %q", key, want)
+		}
+	}
+}
+
+func TestClearPrefixLeavesActiveJobsAlone(t *testing.T) {
+	q := New[string]()
+	q.Upsert("p1/a", "p1/a", nil)
+	q.Upsert("p1/b", "p1/b", nil)
+	_, activeKey, _ := q.Pop() // one of them is now in-flight
+
+	q.ClearPrefix("p1")
+	if !q.IsPending(activeKey) {
+		t.Fatal("ClearPrefix must not affect an already-active (in-flight) job")
+	}
+}
+
 func TestPopBlocksUntilUpsert(t *testing.T) {
 	q := New[string]()
 	done := make(chan struct{})

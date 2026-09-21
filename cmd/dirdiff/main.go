@@ -87,7 +87,7 @@ func parseLevel(level string) (diffmodel.CompareLevel, error) {
 	case "metadata":
 		return diffmodel.SizeMtime, nil
 	case "content":
-		return diffmodel.Checksum, nil
+		return diffmodel.Content, nil
 	default:
 		return 0, fmt.Errorf("invalid --level %q (want metadata|content|none)", level)
 	}

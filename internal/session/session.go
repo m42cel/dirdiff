@@ -590,7 +590,7 @@ func (s *Session) examine(id PairingID, n *pairtree.Node, level diffmodel.Compar
 			s.enqueueStat(sd, sn)
 		}
 	}
-	if level < diffmodel.Checksum || n.Presence() != diffmodel.Both {
+	if level < diffmodel.Content || n.Presence() != diffmodel.Both {
 		return // nothing further: a metadata verdict needs no job at all
 	}
 	if !n.Left.HaveStat || !n.Right.HaveStat {

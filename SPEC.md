@@ -31,7 +31,7 @@ dirdiff [flags] <left-dir> <right-dir>
 |---|---|
 | `--level=<level>` | Initial comparison level to auto-apply recursively across the whole tree as results come in. One of `metadata`, `content`, `none`. Default: `metadata`. `none` opts back into existence-only (listing/matching, no auto-compare). |
 | `--scan-workers=<n>` | Concurrency of the listing worker pool. Default: `2` (§8.2). |
-| `--compare-workers=<n>` | Concurrency of the checksum/compare worker pool. Default: `GOMAXPROCS` (§8.2). |
+| `--compare-workers=<n>` | Concurrency of the compare worker pool. Default: `GOMAXPROCS` (§8.2). |
 | `--version` | Print version, commit and platform to stdout and exit 0, without entering the TUI. Valid on its own — the two directory arguments are not required with it. |
 
 `--level`'s three values keep exactly the meanings above, whatever
@@ -174,7 +174,7 @@ corresponding directory in each tree, and the cursor row is always the same
 index in both panes conceptually (see §4.3 for the one-sided case).
 
 Each row shows: entry name, type glyph (file/dir/symlink), and a status
-glyph+color (see §6). No inline size/mtime/checksum columns — that detail
+glyph+color (see §6). No inline size/mtime/content columns — that detail
 appears in the details panel instead, to keep rows compact and both panes
 aligned.
 
@@ -614,7 +614,7 @@ than merely between cheap and expensive: everything in the examination
 pool is the product of a trigger (§5.2) or of `--level`'s ambient arming,
 and is therefore what `x` cancels (§5.4).
 
-Keeping these separate ensures a large recursive checksum job doesn't
+Keeping these separate ensures a large recursive content-comparison job doesn't
 starve the ambient directory-listing scan (and vice versa), which matters
 because listing is what makes the UI feel instantly responsive when you
 navigate somewhere new.

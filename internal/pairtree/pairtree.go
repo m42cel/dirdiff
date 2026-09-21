@@ -410,7 +410,7 @@ func ApplyMetadata(n *Node) {
 		return
 	}
 	if n.Type == diffmodel.Symlink {
-		ApplyCompareResult(n, diffmodel.Checksum, sameIf(n.Left.LinkTarget == n.Right.LinkTarget), nil)
+		ApplyCompareResult(n, diffmodel.Content, sameIf(n.Left.LinkTarget == n.Right.LinkTarget), nil)
 		return
 	}
 	same := n.Left.Size == n.Right.Size && n.Left.Mtime.Equal(n.Right.Mtime)

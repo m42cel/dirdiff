@@ -93,11 +93,11 @@ func TestRecursiveTriggerReachesLaterDiscoveredDescendants(t *testing.T) {
 	// "sub" is very likely not listed yet at this point — sub/f.txt isn't
 	// even a node yet — which is exactly the case this test exercises:
 	// a recursive trigger must still reach it once listing catches up.
-	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, true)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Content, true)
 
 	pump(t, s, 5*time.Second, func() bool {
 		n, ok := s.Node("sub/f.txt")
-		return ok && n.Level == diffmodel.Checksum
+		return ok && n.Level == diffmodel.Content
 	})
 
 	n, _ := s.Node("sub/f.txt")
@@ -127,11 +127,11 @@ func TestRecursiveTriggerOnNotYetListedDirectoryStillArms(t *testing.T) {
 	// still empty right now, since nothing has been pumped since root was
 	// listed. The trigger must not be silently lost.
 	s.Navigate(RootPairing, sub)
-	s.TriggerCompare(RootPairing, sub, diffmodel.Checksum, true)
+	s.TriggerCompare(RootPairing, sub, diffmodel.Content, true)
 
 	pump(t, s, 5*time.Second, func() bool {
 		n, ok := s.Node("sub/f.txt")
-		return ok && n.Level == diffmodel.Checksum
+		return ok && n.Level == diffmodel.Content
 	})
 	n, _ := s.Node("sub/f.txt")
 	if n.Result != diffmodel.Differs {
@@ -219,11 +219,11 @@ func TestNonRecursiveTriggerOnlyAffectsDirectChildren(t *testing.T) {
 		return ok
 	})
 
-	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, false)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Content, false)
 
 	pump(t, s, 5*time.Second, func() bool {
 		n, _ := s.Node("top.txt")
-		return n.Level == diffmodel.Checksum
+		return n.Level == diffmodel.Content
 	})
 
 	// Give any (incorrect) stray work a moment to land, then verify the
@@ -254,9 +254,9 @@ func TestTriggerOnASingleFileComparesOnlyThatFile(t *testing.T) {
 	if !ok {
 		t.Fatal("wanted.txt not found")
 	}
-	s.TriggerCompare(RootPairing, wanted, diffmodel.Checksum, true) // recursive means nothing for a file
+	s.TriggerCompare(RootPairing, wanted, diffmodel.Content, true) // recursive means nothing for a file
 
-	pump(t, s, 5*time.Second, func() bool { return wanted.Level == diffmodel.Checksum })
+	pump(t, s, 5*time.Second, func() bool { return wanted.Level == diffmodel.Content })
 	drainPending(t, s)
 
 	if wanted.Result != diffmodel.Differs {
@@ -281,7 +281,7 @@ func TestCancelPendingComparesDropsQueuedNotActive(t *testing.T) {
 
 	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
-	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, false)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Content, false)
 	s.CancelPendingCompares()
 
 	if stats := s.Stats(); stats.CmpPending != 0 {
@@ -389,7 +389,7 @@ func TestSubtreePendingCompareTracksAncestorsAndClears(t *testing.T) {
 		t.Fatal("examination already pending before any compare was triggered")
 	}
 
-	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, true)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Content, true)
 
 	// armRecursive enqueues jobs for already-known descendants
 	// synchronously, so the ancestor counts must already be raised here,
@@ -401,7 +401,7 @@ func TestSubtreePendingCompareTracksAncestorsAndClears(t *testing.T) {
 
 	pump(t, s, 5*time.Second, func() bool {
 		n, _ := s.Node("sub/f.txt")
-		return n.Level == diffmodel.Checksum
+		return n.Level == diffmodel.Content
 	})
 	drainPending(t, s)
 
@@ -422,7 +422,7 @@ func TestCancelPendingComparesClearsSubtreePendingCompare(t *testing.T) {
 
 	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
-	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, false)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Content, false)
 	s.CancelPendingCompares()
 
 	// A job already popped by the single worker before cancel ran is
@@ -554,14 +554,14 @@ func TestContentLevelSkipsFilesWhoseSizesAlreadyDiffer(t *testing.T) {
 	mustWrite(t, filepath.Join(left, "same-size.txt"), "aaaa")
 	mustWrite(t, filepath.Join(right, "same-size.txt"), "bbbb")
 
-	s := New(left, right, 2, 2, diffmodel.Checksum)
+	s := New(left, right, 2, 2, diffmodel.Content)
 	defer s.Close()
 
 	var c counts
 	c.pump(t, s, 5*time.Second, func() bool {
 		for _, name := range []string{"sizes-differ.txt", "same-size.txt"} {
 			n, ok := s.Node(name)
-			if !ok || n.Level != diffmodel.Checksum {
+			if !ok || n.Level != diffmodel.Content {
 				return false
 			}
 		}
@@ -574,7 +574,7 @@ func TestContentLevelSkipsFilesWhoseSizesAlreadyDiffer(t *testing.T) {
 	}
 	for _, name := range []string{"sizes-differ.txt", "same-size.txt"} {
 		n, _ := s.Node(name)
-		if n.Result != diffmodel.Differs || n.Level != diffmodel.Checksum {
+		if n.Result != diffmodel.Differs || n.Level != diffmodel.Content {
 			t.Errorf("%s: Result=%v Level=%v; want Differs at the content level either way", name, n.Result, n.Level)
 		}
 	}
@@ -621,13 +621,13 @@ func TestStatResultAfterAContentVerdictKeepsTheVerdict(t *testing.T) {
 	}
 
 	s.OnCompareResult(CompareResult{CompareOutcome: scan.CompareOutcome{
-		RelPath: "f.txt", Level: diffmodel.Checksum, Result: diffmodel.Same,
+		RelPath: "f.txt", Level: diffmodel.Content, Result: diffmodel.Same,
 	}})
 	for _, sd := range diffmodel.Sides {
 		s.OnStatResult(scan.StatResult{Side: sd, RelPath: "f.txt", Size: 2048, Mtime: time.Unix(int64(sd), 0)})
 	}
 
-	if n.Level != diffmodel.Checksum || n.Result != diffmodel.Same {
+	if n.Level != diffmodel.Content || n.Result != diffmodel.Same {
 		t.Fatalf("Level=%v Result=%v; want the content verdict kept despite the differing mtimes", n.Level, n.Result)
 	}
 	if left, _ := s.Tree().SideTotals(); left.Size != 2048 || left.SizedFiles != 1 {
@@ -726,7 +726,7 @@ func TestSetCompareWorkersGrowsAndShrinksWithoutLosingWork(t *testing.T) {
 	pump(t, s, 5*time.Second, func() bool { return s.Tree().Listed() })
 
 	s.SetCompareWorkers(4)
-	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Checksum, false)
+	s.TriggerCompare(RootPairing, s.Tree(), diffmodel.Content, false)
 	s.SetCompareWorkers(1)
 	if got := s.CompareWorkers(); got != 1 {
 		t.Fatalf("CompareWorkers() = %d after SetCompareWorkers(1); want 1", got)
@@ -735,7 +735,7 @@ func TestSetCompareWorkersGrowsAndShrinksWithoutLosingWork(t *testing.T) {
 	pump(t, s, 5*time.Second, func() bool {
 		for i := 0; i < 20; i++ {
 			n, ok := s.Node(fmt.Sprintf("f%d.txt", i))
-			if !ok || n.Level != diffmodel.Checksum {
+			if !ok || n.Level != diffmodel.Content {
 				return false
 			}
 		}

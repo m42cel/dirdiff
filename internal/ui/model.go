@@ -488,7 +488,7 @@ func (m *Model) clampCursor() {
 // work.
 func (m *Model) cycleCompareLevel() {
 	if m.compareLevel == diffmodel.SizeMtime {
-		m.compareLevel = diffmodel.Checksum
+		m.compareLevel = diffmodel.Content
 	} else {
 		m.compareLevel = diffmodel.SizeMtime
 	}

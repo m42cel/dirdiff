@@ -116,7 +116,7 @@ func TestDoCompareSizeMismatchNeedsNoRead(t *testing.T) {
 
 	out := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "f"), RightAbs: filepath.Join(right, "f"),
-		Type: diffmodel.File, Level: diffmodel.Checksum,
+		Type: diffmodel.File, Level: diffmodel.Content,
 	})
 	if out.Result != diffmodel.Differs {
 		t.Fatalf("Result = %v (err %v); want Differs decided from the sizes alone", out.Result, out.Err)
@@ -176,7 +176,7 @@ func TestDoStatMissingEntryIsAnError(t *testing.T) {
 	}
 }
 
-func TestDoCompareChecksum(t *testing.T) {
+func TestDoCompareContent(t *testing.T) {
 	left := t.TempDir()
 	right := t.TempDir()
 
@@ -189,7 +189,7 @@ func TestDoCompareChecksum(t *testing.T) {
 
 	sameOut := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "same"), RightAbs: filepath.Join(right, "same"),
-		Type: diffmodel.File, Level: diffmodel.Checksum,
+		Type: diffmodel.File, Level: diffmodel.Content,
 	})
 	if sameOut.Result != diffmodel.Same {
 		t.Fatalf("Result = %v; want Same", sameOut.Result)
@@ -197,14 +197,14 @@ func TestDoCompareChecksum(t *testing.T) {
 
 	diffOut := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "diff"), RightAbs: filepath.Join(right, "diff"),
-		Type: diffmodel.File, Level: diffmodel.Checksum,
+		Type: diffmodel.File, Level: diffmodel.Content,
 	})
 	if diffOut.Result != diffmodel.Differs {
 		t.Fatalf("Result = %v; want Differs", diffOut.Result)
 	}
 }
 
-func TestDoCompareChecksumAcrossChunkBoundary(t *testing.T) {
+func TestDoCompareContentAcrossChunkBoundary(t *testing.T) {
 	left := t.TempDir()
 	right := t.TempDir()
 
@@ -224,7 +224,7 @@ func TestDoCompareChecksumAcrossChunkBoundary(t *testing.T) {
 
 	out := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "big"), RightAbs: filepath.Join(right, "big"),
-		Type: diffmodel.File, Level: diffmodel.Checksum,
+		Type: diffmodel.File, Level: diffmodel.Content,
 	})
 	if out.Result != diffmodel.Differs {
 		t.Fatalf("Result = %v; want Differs", out.Result)

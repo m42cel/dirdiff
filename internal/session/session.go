@@ -1,44 +1,48 @@
 // Package session orchestrates dirdiff's background work: it owns the
-// tree, the two worker pools (listing and comparison, SPEC.md §8.2), and
-// the logic that decides what to enqueue and at what priority. It is
-// deliberately independent of Bubble Tea — it exposes plain channels for
-// results, which package ui wraps into tea.Cmd/tea.Msg. All tree
-// mutation happens on the caller's goroutine (the UI's Update loop);
-// Session itself only touches the concurrency-safe worker queues.
+// two side trees and the pairing over them, the two worker pools
+// (listing and comparison, SPEC.md §8.2), and the logic that decides
+// what to enqueue and at what priority. It is deliberately independent
+// of Bubble Tea — it exposes plain channels for results, which package
+// ui wraps into tea.Cmd/tea.Msg. All tree mutation happens on the
+// caller's goroutine (the UI's Update loop); Session itself only touches
+// the concurrency-safe worker queues.
 package session
 
 import (
 	"sync/atomic"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
+	"github.com/m42cel/dirdiff/internal/pairtree"
 	"github.com/m42cel/dirdiff/internal/scan"
-	"github.com/m42cel/dirdiff/internal/tree"
+	"github.com/m42cel/dirdiff/internal/sidetree"
 	"github.com/m42cel/dirdiff/internal/workqueue"
 )
+
+// side is one compared tree: where it lives on disk and what's been
+// discovered of it so far.
+type side struct {
+	root string
+	tree *sidetree.Tree
+}
 
 // Session holds everything needed to scan and compare two directory
 // trees in the background.
 type Session struct {
 	LeftRoot, RightRoot string
-	Tree                *tree.Node
 
-	// nodeIndex is keyed by RelPath alone, so it can't distinguish a file
-	// from a directory of the same name (SPEC.md §3.1 matches those as
-	// two unrelated rows sharing one RelPath) — fine for OnCompareResult,
-	// since a compare job only ever targets a both-sided entry and two
-	// entries can only share a RelPath by having different, one-sided
-	// presences (see dirIndex below). Not safe for directory listing
-	// lookups, which is what dirIndex is for.
-	nodeIndex map[string]*tree.Node
+	// sides holds the two trees, indexed by diffmodel.Side. Listing and
+	// metadata land here and are shared: a subtree read once is read once,
+	// however many pairings end up covering it.
+	sides [2]*side
 
-	// dirIndex mirrors nodeIndex but holds only directory nodes, so
-	// OnListResult can resolve a listing result to the right node even
-	// when a same-named file collides with it in nodeIndex (last one
-	// indexed there wins, and children are indexed dirs-first — see
-	// sortChildren — so a colliding file always wins nodeIndex, which
-	// would otherwise misroute the directory's own listing result onto
-	// the file node and leave the directory's Listing flag stuck true).
-	dirIndex map[string]*tree.Node
+	// Tree is the root pairing: the two roots matched entry by entry.
+	Tree *pairtree.Node
+
+	// pairOf maps a side node to the row pairing it, per side, so a
+	// listing result can be fanned out from the side tree it landed in to
+	// the pairing that shows it in O(1). A side node appears in at most
+	// one row of a given pairing.
+	pairOf [2]map[*sidetree.Node]*pairtree.Node
 
 	listQ *workqueue.Queue[scan.ListJob]
 	cmpQ  *workqueue.Queue[scan.CompareJob]
@@ -57,28 +61,38 @@ type Session struct {
 }
 
 // New creates a Session, starts its worker pools, and enqueues the
-// initial listing of the root directory at High priority so the first
-// level is shown as soon as possible (SPEC.md §8.1). If autoLevel is not
-// NotCompared, the whole tree is armed to auto-compare recursively at that
-// level in the background at Low priority as listing discovers it
-// (SPEC.md §2.1's --compare-level flag, size-date by default).
+// initial listing of each root so the first level is shown as soon as
+// possible (SPEC.md §8.1). If autoLevel is not NotCompared, the whole
+// tree is armed to auto-compare recursively at that level in the
+// background as listing discovers it (SPEC.md §2.1's --level flag,
+// metadata by default).
 //
 // listWorkers and compareWorkers size the two pools independently
 // (SPEC.md §8.2's --scan-workers/--compare-workers): listing is cheap,
-// low-CPU directory-metadata I/O that doesn't benefit from scaling with
-// core count (and on a mechanical disk, more concurrent listing jobs can
-// mean more seeking for no throughput gain), while comparison — especially
-// at the content level — does real per-byte CPU work alongside the I/O,
-// so scaling it with GOMAXPROCS is the more defensible default of the two.
+// low-CPU directory-metadata I/O that doesn't benefit much from scaling
+// with core count (and on a mechanical disk, more concurrent listing
+// jobs can mean more seeking for no throughput gain) — though it wants
+// at least two, since a listing job reads one side and the two sides of
+// a directory are otherwise read one after the other. Comparison —
+// especially at the content level — does real per-byte CPU work
+// alongside the I/O, so scaling it with GOMAXPROCS is the more
+// defensible default of the two.
 func New(leftRoot, rightRoot string, listWorkers, compareWorkers int, autoLevel diffmodel.CompareLevel) *Session {
-	root := tree.NewRoot()
+	left, right := sidetree.NewTree(diffmodel.Left), sidetree.NewTree(diffmodel.Right)
+	root := pairtree.NewRoot(left.Root, right.Root)
 	s := &Session{
 		LeftRoot: leftRoot, RightRoot: rightRoot,
-		Tree:      root,
-		nodeIndex: map[string]*tree.Node{"": root},
-		dirIndex:  map[string]*tree.Node{"": root},
-		listQ:     workqueue.New[scan.ListJob](),
-		cmpQ:      workqueue.New[scan.CompareJob](),
+		sides: [2]*side{
+			diffmodel.Left:  {root: leftRoot, tree: left},
+			diffmodel.Right: {root: rightRoot, tree: right},
+		},
+		Tree: root,
+		pairOf: [2]map[*sidetree.Node]*pairtree.Node{
+			diffmodel.Left:  {left.Root: root},
+			diffmodel.Right: {right.Root: root},
+		},
+		listQ: workqueue.New[scan.ListJob](),
+		cmpQ:  workqueue.New[scan.CompareJob](),
 		// Buffered so workers never block handing off a result while the
 		// UI is busy processing the previous one.
 		listResults: make(chan scan.ListResult, 64),
@@ -92,7 +106,9 @@ func New(leftRoot, rightRoot string, listWorkers, compareWorkers int, autoLevel 
 	s.SetListWorkers(listWorkers)
 	s.SetCompareWorkers(compareWorkers)
 
-	s.enqueueList(root)
+	for _, sd := range diffmodel.Sides {
+		s.enqueueList(sd, s.sides[sd].tree.Root)
+	}
 
 	return s
 }
@@ -199,94 +215,153 @@ func (s *Session) SetCompareWorkers(n int) {
 func (s *Session) ListWorkers() int    { return int(s.listTarget.Load()) }
 func (s *Session) CompareWorkers() int { return int(s.cmpTarget.Load()) }
 
-func (s *Session) enqueueList(n *tree.Node) {
+// listKey namespaces a listing job by the side it reads (SPEC.md §8.3).
+// The two side trees are unconnected, so the same relative path names two
+// different jobs; the namespace is a leading path segment so the queue's
+// own distance math applies to it unchanged.
+func listKey(sd diffmodel.Side, relPath string) string {
+	ns := "L"
+	if sd == diffmodel.Right {
+		ns = "R"
+	}
+	if relPath == "" {
+		return ns
+	}
+	return ns + "/" + relPath
+}
+
+func (s *Session) enqueueList(sd diffmodel.Side, n *sidetree.Node) {
 	n.Listing = true
-	created := s.listQ.Upsert(n.RelPath, scan.ListJob{
-		RelPath:  n.RelPath,
-		LeftAbs:  scan.AbsPath(s.LeftRoot, n.RelPath),
-		RightAbs: scan.AbsPath(s.RightRoot, n.RelPath),
+	created := s.listQ.Upsert(listKey(sd, n.RelPath), scan.ListJob{
+		Side:    sd,
+		RelPath: n.RelPath,
+		Abs:     scan.AbsPath(s.sides[sd].root, n.RelPath),
 	}, nil)
 	if created {
-		leftDelta, rightDelta := pendingListingDeltas(n.Presence, 1)
-		tree.AdjustPendingListing(n, leftDelta, rightDelta)
+		sidetree.AdjustPendingListing(n, 1)
 	}
 }
 
-// pendingListingDeltas reports which side(s) a listing job for a node
-// with the given presence actually does work on — a one-sided node's
-// listing job only ever reads the side it exists on, so only that side
-// should register as pending.
-func pendingListingDeltas(presence diffmodel.Presence, delta int) (left, right int) {
-	if presence != diffmodel.RightOnly {
-		left = delta
+// Node looks up the pairing row at relPath, if it's been discovered yet.
+// A file and a directory of the same name are two unrelated rows sharing
+// one path (SPEC.md §3.1) — only one of the two can be both-sided, and
+// only then, so this resolves a compare job's path unambiguously; asked
+// for a colliding path it answers with the left side's row.
+func (s *Session) Node(relPath string) (*pairtree.Node, bool) {
+	for _, sd := range diffmodel.Sides {
+		sn, ok := s.sides[sd].tree.Index[relPath]
+		if !ok {
+			continue
+		}
+		if p, ok := s.pairOf[sd][sn]; ok {
+			return p, true
+		}
 	}
-	if presence != diffmodel.LeftOnly {
-		right = delta
-	}
-	return left, right
+	return nil, false
 }
 
-// Node looks up a node by RelPath, if it's been discovered yet. If a
-// file and directory of the same name collide at relPath (SPEC.md §3.1),
-// this returns whichever was indexed last — use dirIndex-backed lookups
-// (as OnListResult does) when the directory specifically is required.
-func (s *Session) Node(relPath string) (*tree.Node, bool) {
-	n, ok := s.nodeIndex[relPath]
-	return n, ok
-}
-
-// OnListResult applies a completed listing to the tree, indexes the new
-// children, continues the ambient breadth-first scan into any newly
-// discovered subdirectories (SPEC.md §8.1), and — if this directory was
-// armed for a recursive compare that started before it was listed —
-// applies that comparison to the newly discovered children now (SPEC.md
-// §5.2/§5.4).
+// OnListResult applies a completed listing to the side tree it came
+// from, continues the ambient breadth-first scan into any newly
+// discovered subdirectories of that side (SPEC.md §8.1), and then fans
+// the new entries out to the pairing: whatever now has a counterpart on
+// the other side becomes a row, and a directory armed for a recursive
+// compare that started before it was listed has that comparison applied
+// to its new children now (SPEC.md §5.2/§5.4).
 func (s *Session) OnListResult(r scan.ListResult) {
-	n, ok := s.dirIndex[r.RelPath]
+	t := s.sides[r.Side].tree
+	n, ok := t.Index[r.RelPath]
 	if !ok {
 		return
 	}
-	tree.ApplyListing(n, r.Children, r.LeftErr, r.RightErr)
-	leftDelta, rightDelta := pendingListingDeltas(n.Presence, -1)
-	tree.AdjustPendingListing(n, leftDelta, rightDelta)
+	t.ApplyListing(n, r.Entries, r.Err)
+	sidetree.AdjustPendingListing(n, -1)
 
 	for _, c := range n.Children {
-		s.nodeIndex[c.RelPath] = c
 		if c.IsDir() {
-			s.dirIndex[c.RelPath] = c
-			s.enqueueList(c)
+			s.enqueueList(r.Side, c)
 		}
 	}
 
-	if n.PendingRecursiveLevel != diffmodel.NotCompared {
-		s.armRecursive(n.Children, n.PendingRecursiveLevel)
-	}
-}
-
-// OnCompareResult applies a completed comparison to the tree.
-func (s *Session) OnCompareResult(r scan.CompareOutcome) {
-	n, ok := s.nodeIndex[r.RelPath]
+	p, ok := s.pairOf[r.Side][n]
 	if !ok {
 		return
 	}
-	tree.ApplyCompareResult(n, r.Level, r.Result, r.Err, r.Stat)
-	tree.AdjustPendingCompare(n, -1)
+	s.merge(p)
+	if p.PendingRecursiveLevel != diffmodel.NotCompared {
+		s.armRecursive(p.Children, p.PendingRecursiveLevel)
+	}
 }
 
-// Navigate reprioritizes both worker queues for a directory change: to
-// becomes the new focus path (SPEC.md §8.3), so every still-queued job
-// anywhere in to's subtree — at any depth, not just its direct children —
-// now pops ahead of everything outside it, ordered by tree-edge distance
-// from to. Moving the cursor within an already-listed directory should
-// not call this — only changing the current directory does.
-func (s *Session) Navigate(to *tree.Node) {
+// merge builds whatever rows p's two sides now allow and indexes them,
+// descending into any new directory row whose own two sides happen to be
+// listed already — a row created after its subtree was scanned has no
+// listing result left to arrive and would otherwise stay empty forever.
+func (s *Session) merge(p *pairtree.Node) {
+	for _, c := range pairtree.Merge(p) {
+		for _, sd := range diffmodel.Sides {
+			if sn := sideNode(c, sd); sn != nil {
+				s.pairOf[sd][sn] = c
+			}
+		}
+		if c.IsDir() {
+			s.merge(c)
+		}
+	}
+}
+
+func sideNode(p *pairtree.Node, sd diffmodel.Side) *sidetree.Node {
+	if sd == diffmodel.Right {
+		return p.Right
+	}
+	return p.Left
+}
+
+// OnCompareResult applies a completed comparison: the verdict to the
+// pairing, and any metadata it had to read to the side trees, where it's
+// shared with every other pairing over the same files. Metadata is
+// recorded even when the verdict itself is stale (SPEC.md §5.3 keeps the
+// deeper level), since a size is a fact about the file rather than part
+// of the comparison.
+func (s *Session) OnCompareResult(r scan.CompareOutcome) {
+	n, ok := s.Node(r.RelPath)
+	if !ok {
+		return
+	}
+	if r.Stat != nil {
+		if n.Left != nil {
+			sidetree.ApplyStat(n.Left, r.Stat.LeftSize, r.Stat.LeftMtime)
+		}
+		if n.Right != nil {
+			sidetree.ApplyStat(n.Right, r.Stat.RightSize, r.Stat.RightMtime)
+		}
+	}
+	pairtree.ApplyCompareResult(n, r.Level, r.Result, r.Err)
+	pairtree.AdjustPendingCompare(n, -1)
+}
+
+// Navigate reprioritizes both worker queues for a directory change: to's
+// two sides become the new focus paths (SPEC.md §8.3), so every
+// still-queued job anywhere in either side's subtree — at any depth, not
+// just its direct children — now pops ahead of everything outside it,
+// ordered by tree-edge distance. Moving the cursor within an
+// already-listed directory should not call this — only changing the
+// current directory does.
+func (s *Session) Navigate(to *pairtree.Node) {
 	if to == nil {
 		return
 	}
-	if !to.Listed && !to.Listing {
-		s.enqueueList(to)
+	var foci []string
+	for _, sd := range diffmodel.Sides {
+		sn := sideNode(to, sd)
+		if sn == nil {
+			continue
+		}
+		if !sn.Listed && !sn.Listing {
+			s.enqueueList(sd, sn)
+		}
+		foci = append(foci, listKey(sd, sn.RelPath))
 	}
-	s.listQ.SetFocus(to.RelPath)
+	s.listQ.SetFoci(foci...)
 	s.cmpQ.SetFocus(to.RelPath)
 }
 
@@ -299,7 +374,7 @@ func (s *Session) Navigate(to *tree.Node) {
 // also the current navigation focus, so these jobs already sort ahead of
 // unrelated background work (SPEC.md §8.3) without needing a priority of
 // their own.
-func (s *Session) TriggerCompare(dir *tree.Node, level diffmodel.CompareLevel, recursive bool) {
+func (s *Session) TriggerCompare(dir *pairtree.Node, level diffmodel.CompareLevel, recursive bool) {
 	if dir == nil || !dir.IsDir() {
 		return
 	}
@@ -324,16 +399,16 @@ func (s *Session) TriggerCompare(dir *tree.Node, level diffmodel.CompareLevel, r
 // armRecursive marks each directory in nodes (and, transitively, every
 // already-listed descendant directory) as pending level, and enqueues
 // compare jobs for every currently known file/symlink descendant.
-func (s *Session) armRecursive(nodes []*tree.Node, level diffmodel.CompareLevel) {
+func (s *Session) armRecursive(nodes []*pairtree.Node, level diffmodel.CompareLevel) {
 	for _, c := range nodes {
-		if c.Presence != diffmodel.Both {
+		if c.Presence() != diffmodel.Both {
 			continue // nothing to compare against on the missing side
 		}
 		if c.IsDir() {
 			if level > c.PendingRecursiveLevel {
 				c.PendingRecursiveLevel = level
 			}
-			if c.Listed {
+			if c.Listed() {
 				s.armRecursive(c.Children, level)
 			}
 			continue
@@ -342,17 +417,19 @@ func (s *Session) armRecursive(nodes []*tree.Node, level diffmodel.CompareLevel)
 	}
 }
 
-func (s *Session) maybeEnqueueCompare(n *tree.Node, level diffmodel.CompareLevel) {
-	if n.Presence != diffmodel.Both {
+func (s *Session) maybeEnqueueCompare(n *pairtree.Node, level diffmodel.CompareLevel) {
+	if n.Presence() != diffmodel.Both {
 		return
 	}
 	if n.Level >= level {
 		return // already have an equal-or-deeper result (SPEC.md §5.3)
 	}
 	job := scan.CompareJob{
-		RelPath: n.RelPath,
-		LeftAbs: scan.AbsPath(s.LeftRoot, n.RelPath), RightAbs: scan.AbsPath(s.RightRoot, n.RelPath),
-		Type: n.Type, Level: level,
+		RelPath:  n.RelPath,
+		LeftAbs:  scan.AbsPath(s.sides[diffmodel.Left].root, n.Left.RelPath),
+		RightAbs: scan.AbsPath(s.sides[diffmodel.Right].root, n.Right.RelPath),
+		Type:     n.Type,
+		Level:    level,
 	}
 	created := s.cmpQ.Upsert(n.RelPath, job, func(old scan.CompareJob) scan.CompareJob {
 		if level > old.Level {
@@ -361,7 +438,7 @@ func (s *Session) maybeEnqueueCompare(n *tree.Node, level diffmodel.CompareLevel
 		return old
 	})
 	if created {
-		tree.AdjustPendingCompare(n, 1)
+		pairtree.AdjustPendingCompare(n, 1)
 	}
 }
 
@@ -372,8 +449,8 @@ func (s *Session) maybeEnqueueCompare(n *tree.Node, level diffmodel.CompareLevel
 // instead of via OnCompareResult.
 func (s *Session) CancelPendingCompares() {
 	for _, key := range s.cmpQ.Clear() {
-		if n, ok := s.nodeIndex[key]; ok {
-			tree.AdjustPendingCompare(n, -1)
+		if n, ok := s.Node(key); ok {
+			pairtree.AdjustPendingCompare(n, -1)
 		}
 	}
 }
@@ -391,9 +468,11 @@ func (s *Session) Stats() QueueStats {
 	}
 }
 
-// IsListPending reports whether relPath's directory listing is queued
+// IsListPending reports whether relPath's listing on one side is queued
 // or in-flight.
-func (s *Session) IsListPending(relPath string) bool { return s.listQ.IsPending(relPath) }
+func (s *Session) IsListPending(sd diffmodel.Side, relPath string) bool {
+	return s.listQ.IsPending(listKey(sd, relPath))
+}
 
 // IsComparePending reports whether relPath has a queued or in-flight
 // comparison job.

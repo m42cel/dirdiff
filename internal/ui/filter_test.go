@@ -4,7 +4,8 @@ import (
 	"testing"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
-	"github.com/m42cel/dirdiff/internal/tree"
+	"github.com/m42cel/dirdiff/internal/pairtree"
+	"github.com/m42cel/dirdiff/internal/sidetree"
 )
 
 func setOf(fs ...FilterStatus) FilterSet {
@@ -15,19 +16,32 @@ func setOf(fs ...FilterStatus) FilterSet {
 	return s
 }
 
-func file(name string, presence diffmodel.Presence, result diffmodel.CompareResult) *tree.Node {
-	return &tree.Node{Name: name, Type: diffmodel.File, Presence: presence, Result: result}
+// row builds a pair node standing on whichever sides presence says it
+// exists on — presence is derived from those two pointers, not stored.
+func row(name string, typ diffmodel.EntryType, presence diffmodel.Presence, result diffmodel.CompareResult) *pairtree.Node {
+	n := &pairtree.Node{Type: typ, RelPath: name, Result: result}
+	if presence != diffmodel.RightOnly {
+		n.Left = &sidetree.Node{Name: name, Type: typ, RelPath: name}
+	}
+	if presence != diffmodel.LeftOnly {
+		n.Right = &sidetree.Node{Name: name, Type: typ, RelPath: name}
+	}
+	return n
 }
 
-// dir links its children with tree.AddChild rather than assigning
+func file(name string, presence diffmodel.Presence, result diffmodel.CompareResult) *pairtree.Node {
+	return row(name, diffmodel.File, presence, result)
+}
+
+// dir links its children with pairtree.AddChild rather than assigning
 // Children directly, since that's what keeps the per-status descendant
 // tallies hasMatchingDescendant reads in sync — a hand-linked subtree
 // would report as empty. Children must already carry their final
 // status, as they do here (nothing re-compares them afterwards).
-func dir(name string, presence diffmodel.Presence, result diffmodel.CompareResult, children ...*tree.Node) *tree.Node {
-	d := &tree.Node{Name: name, Type: diffmodel.Dir, Presence: presence, Result: result}
+func dir(name string, presence diffmodel.Presence, result diffmodel.CompareResult, children ...*pairtree.Node) *pairtree.Node {
+	d := row(name, diffmodel.Dir, presence, result)
 	for _, c := range children {
-		tree.AddChild(d, c)
+		pairtree.AddChild(d, c)
 	}
 	return d
 }
@@ -50,7 +64,7 @@ func TestMatchesFilter_DirectoryNeverMatchesEqualOrDifferentDirectly(t *testing.
 func TestFilterChildren_DirectoryVisibleOnlyUnderMatchingFilter(t *testing.T) {
 	leftOnlyChild := file("only-here", diffmodel.LeftOnly, diffmodel.Unknown)
 	d := dir("sub", diffmodel.Both, diffmodel.Differs, leftOnlyChild)
-	siblings := []*tree.Node{d}
+	siblings := []*pairtree.Node{d}
 
 	if got := filterChildren(siblings, setOf(FilterDifferent)); len(got) != 0 {
 		t.Fatalf("dir with only a left-only child must be hidden under FilterDifferent, got %d rows", len(got))
@@ -67,7 +81,7 @@ func TestFilterChildren_DirectoryVisibleOnlyUnderMatchingFilter(t *testing.T) {
 func TestFilterChildren_EntirelyEqualSubtreeSurfacesViaDescendant(t *testing.T) {
 	equalFile := file("a", diffmodel.Both, diffmodel.Same)
 	d := dir("clean", diffmodel.Both, diffmodel.Same, equalFile)
-	siblings := []*tree.Node{d}
+	siblings := []*pairtree.Node{d}
 
 	got := filterChildren(siblings, setOf(FilterEqual))
 	if len(got) != 1 || got[0] != d {
@@ -96,7 +110,7 @@ func TestMatchesFilter_MultiSelectIsOrCombined(t *testing.T) {
 }
 
 func TestMatchesFilter_EmptySetMatchesNothing(t *testing.T) {
-	nodes := []*tree.Node{
+	nodes := []*pairtree.Node{
 		file("a", diffmodel.LeftOnly, diffmodel.Unknown),
 		file("b", diffmodel.RightOnly, diffmodel.Unknown),
 		file("c", diffmodel.Both, diffmodel.Same),
@@ -105,7 +119,7 @@ func TestMatchesFilter_EmptySetMatchesNothing(t *testing.T) {
 	empty := FilterSet{}
 	for _, n := range nodes {
 		if matchesFilter(n, empty) {
-			t.Errorf("node %s unexpectedly matched an empty filter set", n.Name)
+			t.Errorf("node %s unexpectedly matched an empty filter set", n.Name())
 		}
 	}
 	if got := filterChildren(nodes, empty); len(got) != 0 {

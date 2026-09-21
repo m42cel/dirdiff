@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
-	"github.com/m42cel/dirdiff/internal/tree"
+	"github.com/m42cel/dirdiff/internal/pairtree"
+	"github.com/m42cel/dirdiff/internal/scan"
 )
 
 func mustMkdir(t *testing.T, path string) {
@@ -72,7 +73,7 @@ func TestRecursiveTriggerReachesLaterDiscoveredDescendants(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
 
 	// "sub" is very likely not listed yet at this point — sub/f.txt isn't
 	// even a node yet — which is exactly the case this test exercises:
@@ -100,7 +101,7 @@ func TestRecursiveTriggerOnNotYetListedDirectoryStillArms(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
 	sub, ok := s.Node("sub")
 	if !ok {
 		t.Fatal("sub not found")
@@ -187,7 +188,7 @@ func TestCancelPendingComparesDropsQueuedNotActive(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
 
 	s.TriggerCompare(s.Tree, diffmodel.Checksum, false)
 	s.CancelPendingCompares()
@@ -208,8 +209,8 @@ func TestSubtreePendingListingSettlesToZero(t *testing.T) {
 	s := New(left, right, 2, 2, diffmodel.NotCompared)
 	defer s.Close()
 
-	if s.Tree.PendingListingLeft == 0 || s.Tree.PendingListingRight == 0 {
-		t.Fatalf("PendingListingLeft/Right = %d/%d right after New(); want both > 0, root's own listing was just enqueued for both sides", s.Tree.PendingListingLeft, s.Tree.PendingListingRight)
+	if l, r := s.Tree.PendingListing(); l == 0 || r == 0 {
+		t.Fatalf("PendingListing = %d/%d right after New(); want both > 0, each root's own listing was just enqueued", l, r)
 	}
 
 	pump(t, s, 5*time.Second, func() bool {
@@ -218,8 +219,8 @@ func TestSubtreePendingListingSettlesToZero(t *testing.T) {
 	})
 	drainPending(t, s)
 
-	if s.Tree.PendingListingLeft != 0 || s.Tree.PendingListingRight != 0 {
-		t.Fatalf("PendingListingLeft/Right = %d/%d once the whole tree is listed; want 0/0", s.Tree.PendingListingLeft, s.Tree.PendingListingRight)
+	if l, r := s.Tree.PendingListing(); l != 0 || r != 0 {
+		t.Fatalf("PendingListing = %d/%d once the whole tree is listed; want 0/0", l, r)
 	}
 }
 
@@ -233,39 +234,43 @@ func TestPerSideListingPendingOnOneSidedDirectory(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
 
 	onlyleft, ok := s.Node("onlyleft")
 	if !ok {
 		t.Fatal("onlyleft not found")
 	}
-	if onlyleft.Presence != diffmodel.LeftOnly {
-		t.Fatalf("onlyleft.Presence = %v; want LeftOnly", onlyleft.Presence)
+	if onlyleft.Presence() != diffmodel.LeftOnly {
+		t.Fatalf("onlyleft.Presence = %v; want LeftOnly", onlyleft.Presence())
 	}
 
-	// onlyleft's own listing job was enqueued as soon as it was
-	// discovered (inside the OnListResult call the pump above just
+	// onlyleft's own listing job was enqueued as soon as the left side
+	// discovered it (inside the OnListResult call the pump above just
 	// made), but its result hasn't been pumped yet, so it must still
 	// register as pending — on the left only, since nothing exists to
 	// list on the right.
-	if onlyleft.PendingListingLeft == 0 {
-		t.Fatal("PendingListingLeft = 0 for a still-listing left-only directory; want > 0")
+	pendingLeft, pendingRight := onlyleft.PendingListing()
+	if pendingLeft == 0 {
+		t.Fatal("left PendingListing = 0 for a still-listing left-only directory; want > 0")
 	}
-	if onlyleft.PendingListingRight != 0 {
-		t.Fatalf("PendingListingRight = %d for a left-only directory; want 0, there's nothing to list on the right", onlyleft.PendingListingRight)
+	if pendingRight != 0 {
+		t.Fatalf("right PendingListing = %d for a left-only directory; want 0, there's nothing to list on the right", pendingRight)
 	}
-	if s.Tree.PendingListingRight != 0 {
-		t.Fatalf("root PendingListingRight = %d while only a left-only descendant is pending; want 0", s.Tree.PendingListingRight)
+	rootLeft, rootRight := s.Tree.PendingListing()
+	if rootRight != 0 {
+		t.Fatalf("root right PendingListing = %d while only a left-only descendant is pending; want 0", rootRight)
 	}
-	if s.Tree.PendingListingLeft == 0 {
-		t.Fatal("root PendingListingLeft = 0 while onlyleft's listing is still pending; want > 0")
+	if rootLeft == 0 {
+		t.Fatal("root left PendingListing = 0 while onlyleft's listing is still pending; want > 0")
 	}
 
-	pump(t, s, 5*time.Second, func() bool { return onlyleft.Listed })
+	pump(t, s, 5*time.Second, func() bool { return onlyleft.Listed() })
 	drainPending(t, s)
 
-	if onlyleft.PendingListingLeft != 0 || s.Tree.PendingListingLeft != 0 {
-		t.Fatalf("PendingListingLeft nonzero once onlyleft has settled: onlyleft=%d root=%d", onlyleft.PendingListingLeft, s.Tree.PendingListingLeft)
+	pendingLeft, _ = onlyleft.PendingListing()
+	rootLeft, _ = s.Tree.PendingListing()
+	if pendingLeft != 0 || rootLeft != 0 {
+		t.Fatalf("left PendingListing nonzero once onlyleft has settled: onlyleft=%d root=%d", pendingLeft, rootLeft)
 	}
 }
 
@@ -323,7 +328,7 @@ func TestCancelPendingComparesClearsSubtreePendingCompare(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
 
 	s.TriggerCompare(s.Tree, diffmodel.Checksum, false)
 	s.CancelPendingCompares()
@@ -343,10 +348,10 @@ func TestCancelPendingComparesClearsSubtreePendingCompare(t *testing.T) {
 
 // TestFileDirNameCollisionListingSettles covers SPEC.md §3.1: a file and
 // a directory sharing a name are matched independently by (name, type)
-// into two unrelated, same-RelPath rows. The directory row must still
-// get its own listing result routed to it (not the file row it collides
-// with in RelPath) so its Listing flag clears and its subtree gets
-// discovered.
+// into two unrelated rows at the same path. The directory row must still
+// get its own listing result routed to it — which it now does by being a
+// node of the left side's own tree, where a name is unambiguous, rather
+// than via a path index shared with the file it collides with.
 func TestFileDirNameCollisionListingSettles(t *testing.T) {
 	left, right := t.TempDir(), t.TempDir()
 	mustMkdir(t, filepath.Join(left, "clash"))
@@ -356,11 +361,11 @@ func TestFileDirNameCollisionListingSettles(t *testing.T) {
 	s := New(left, right, 2, 2, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
 
-	var dirNode, fileNode *tree.Node
+	var dirNode, fileNode *pairtree.Node
 	for _, c := range s.Tree.Children {
-		if c.Name != "clash" {
+		if c.Name() != "clash" {
 			continue
 		}
 		if c.IsDir() {
@@ -372,27 +377,64 @@ func TestFileDirNameCollisionListingSettles(t *testing.T) {
 	if dirNode == nil || fileNode == nil {
 		t.Fatalf("expected both a dir and a file named clash as children of root; got dir=%v file=%v", dirNode, fileNode)
 	}
-	if dirNode.Presence != diffmodel.LeftOnly {
-		t.Fatalf("dirNode.Presence = %v; want LeftOnly", dirNode.Presence)
+	if dirNode.Presence() != diffmodel.LeftOnly {
+		t.Fatalf("dirNode.Presence = %v; want LeftOnly", dirNode.Presence())
 	}
-	if fileNode.Presence != diffmodel.RightOnly {
-		t.Fatalf("fileNode.Presence = %v; want RightOnly", fileNode.Presence)
+	if fileNode.Presence() != diffmodel.RightOnly {
+		t.Fatalf("fileNode.Presence = %v; want RightOnly", fileNode.Presence())
 	}
 
-	pump(t, s, 5*time.Second, func() bool { return dirNode.Listed })
+	pump(t, s, 5*time.Second, func() bool { return dirNode.Listed() })
 	drainPending(t, s)
 
-	if dirNode.Listing {
-		t.Fatal("dirNode.Listing still true after its listing result should have been applied")
+	if dirNode.Left.Listing {
+		t.Fatal("dirNode is still marked listing after its listing result should have been applied")
 	}
-	if len(dirNode.Children) != 1 || dirNode.Children[0].Name != "nested.txt" {
+	if len(dirNode.Children) != 1 || dirNode.Children[0].Name() != "nested.txt" {
 		t.Fatalf("dirNode.Children = %v; want [nested.txt]", dirNode.Children)
 	}
-	if dirNode.PendingListingLeft != 0 {
-		t.Fatalf("dirNode.PendingListingLeft = %d after settling; want 0", dirNode.PendingListingLeft)
+	if pendingLeft, _ := dirNode.PendingListing(); pendingLeft != 0 {
+		t.Fatalf("dirNode left PendingListing = %d after settling; want 0", pendingLeft)
 	}
-	if s.Tree.PendingListingLeft != 0 {
-		t.Fatalf("root PendingListingLeft = %d after settling; want 0", s.Tree.PendingListingLeft)
+	if rootLeft, _ := s.Tree.PendingListing(); rootLeft != 0 {
+		t.Fatalf("root left PendingListing = %d after settling; want 0", rootLeft)
+	}
+}
+
+// A comparison's size and mtime describe one side's file, not the
+// comparison, so they're recorded in the side trees even when the
+// verdict itself is stale and monotonicity discards it (SPEC.md §5.3).
+func TestStaleCompareResultStillRecordsMetadata(t *testing.T) {
+	s := New(t.TempDir(), t.TempDir(), 1, 1, diffmodel.NotCompared)
+	defer s.Close()
+
+	for _, sd := range diffmodel.Sides {
+		s.OnListResult(scan.ListResult{Side: sd, RelPath: "", Entries: []diffmodel.ListedEntry{
+			{Name: "f.txt", Type: diffmodel.File},
+		}})
+	}
+	n, ok := s.Node("f.txt")
+	if !ok {
+		t.Fatal("f.txt not found")
+	}
+
+	s.OnCompareResult(scan.CompareOutcome{
+		RelPath: "f.txt", Level: diffmodel.Checksum, Result: diffmodel.Differs,
+		Stat: &diffmodel.StatInfo{LeftSize: 1, RightSize: 1},
+	})
+	s.OnCompareResult(scan.CompareOutcome{
+		RelPath: "f.txt", Level: diffmodel.SizeMtime, Result: diffmodel.Same,
+		Stat: &diffmodel.StatInfo{LeftSize: 2, RightSize: 2},
+	})
+
+	if n.Level != diffmodel.Checksum || n.Result != diffmodel.Differs {
+		t.Fatalf("Level=%v Result=%v; want the deeper verdict to survive", n.Level, n.Result)
+	}
+	if !n.Left.HaveStat || n.Left.Size != 2 {
+		t.Fatalf("left metadata = %d (HaveStat=%v); want the later size, 2", n.Left.Size, n.Left.HaveStat)
+	}
+	if left, _ := s.Tree.SideTotals(); left.Size != 2 || left.SizedFiles != 1 {
+		t.Fatalf("root left totals = %d bytes over %d files; want 2 over 1", left.Size, left.SizedFiles)
 	}
 }
 
@@ -448,7 +490,7 @@ func TestSetCompareWorkersGrowsAndShrinksWithoutLosingWork(t *testing.T) {
 	s := New(left, right, 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
-	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed })
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
 
 	s.SetCompareWorkers(4)
 	s.TriggerCompare(s.Tree, diffmodel.Checksum, false)

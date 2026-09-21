@@ -23,88 +23,56 @@ func mustWrite(t *testing.T, path string, content string) {
 	}
 }
 
-func TestDoListMergesByNameAndType(t *testing.T) {
-	left := t.TempDir()
-	right := t.TempDir()
-
-	mustWrite(t, filepath.Join(left, "both.txt"), "x")
-	mustWrite(t, filepath.Join(right, "both.txt"), "x")
-
-	mustWrite(t, filepath.Join(left, "leftonly.txt"), "x")
-	mustWrite(t, filepath.Join(right, "rightonly.txt"), "x")
-
-	// "conflict" is a directory on the left and a file on the right — they
-	// must be matched independently (SPEC.md §3.1), not merged into one
-	// "type conflict" row.
-	mustMkdir(t, filepath.Join(left, "conflict"))
-	mustWrite(t, filepath.Join(right, "conflict"), "x")
-
-	res := DoList(ListJob{RelPath: "", LeftAbs: left, RightAbs: right})
-
-	if res.LeftErr != nil || res.RightErr != nil {
-		t.Fatalf("unexpected errors: left=%v right=%v", res.LeftErr, res.RightErr)
+func TestDoListReportsNamesAndTypes(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "f.txt"), "x")
+	mustMkdir(t, filepath.Join(dir, "sub"))
+	if err := os.Symlink("/target", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
 	}
 
-	got := map[string]diffmodel.Presence{}
-	gotType := map[string]diffmodel.EntryType{}
-	for _, c := range res.Children {
-		got[c.Name] = c.Presence
-		gotType[c.Name] = c.Type
+	res := DoList(ListJob{Side: diffmodel.Left, RelPath: "", Abs: dir})
+	if res.Err != nil {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if res.Side != diffmodel.Left {
+		t.Errorf("Side = %v; want Left — a result has to say which tree it came from", res.Side)
 	}
 
-	want := map[string]diffmodel.Presence{
-		"both.txt":      diffmodel.Both,
-		"leftonly.txt":  diffmodel.LeftOnly,
-		"rightonly.txt": diffmodel.RightOnly,
+	want := map[string]diffmodel.EntryType{
+		"f.txt": diffmodel.File,
+		"sub":   diffmodel.Dir,
+		// A symlink is classified as one without being followed (SPEC.md §7),
+		// even when it points at a directory or at nothing at all.
+		"link": diffmodel.Symlink,
 	}
-	for name, p := range want {
-		if got[name] != p {
-			t.Errorf("%s: Presence = %v; want %v", name, got[name], p)
+	got := map[string]diffmodel.EntryType{}
+	for _, e := range res.Entries {
+		got[e.Name] = e.Type
+	}
+	if len(got) != len(want) {
+		t.Fatalf("entries = %v; want %d of them", res.Entries, len(want))
+	}
+	for name, typ := range want {
+		if got[name] != typ {
+			t.Errorf("%s: Type = %v; want %v", name, got[name], typ)
 		}
-	}
-
-	// "conflict" should appear twice: once as a LeftOnly dir, once as a RightOnly file.
-	count := 0
-	for _, c := range res.Children {
-		if c.Name != "conflict" {
-			continue
-		}
-		count++
-		switch c.Type {
-		case diffmodel.Dir:
-			if c.Presence != diffmodel.LeftOnly {
-				t.Errorf("conflict dir: Presence = %v; want LeftOnly", c.Presence)
-			}
-		case diffmodel.File:
-			if c.Presence != diffmodel.RightOnly {
-				t.Errorf("conflict file: Presence = %v; want RightOnly", c.Presence)
-			}
-		default:
-			t.Errorf("conflict: unexpected type %v", c.Type)
-		}
-	}
-	if count != 2 {
-		t.Fatalf("expected 2 'conflict' rows (dir + file), got %d", count)
 	}
 }
 
 func TestDoListSortsDirsFirstThenAlpha(t *testing.T) {
-	left := t.TempDir()
-	right := t.TempDir()
-
+	dir := t.TempDir()
 	for _, name := range []string{"zzz.txt", "aaa.txt"} {
-		mustWrite(t, filepath.Join(left, name), "x")
-		mustWrite(t, filepath.Join(right, name), "x")
+		mustWrite(t, filepath.Join(dir, name), "x")
 	}
 	for _, name := range []string{"zdir", "adir"} {
-		mustMkdir(t, filepath.Join(left, name))
-		mustMkdir(t, filepath.Join(right, name))
+		mustMkdir(t, filepath.Join(dir, name))
 	}
 
-	res := DoList(ListJob{LeftAbs: left, RightAbs: right})
+	res := DoList(ListJob{Abs: dir})
 	var names []string
-	for _, c := range res.Children {
-		names = append(names, c.Name)
+	for _, e := range res.Entries {
+		names = append(names, e.Name)
 	}
 	want := []string{"adir", "zdir", "aaa.txt", "zzz.txt"}
 	if len(names) != len(want) {
@@ -117,13 +85,15 @@ func TestDoListSortsDirsFirstThenAlpha(t *testing.T) {
 	}
 }
 
-func TestDoListMissingSideIsNotAnError(t *testing.T) {
-	left := t.TempDir()
-	right := filepath.Join(left, "does-not-exist")
-
-	res := DoList(ListJob{LeftAbs: left, RightAbs: right})
-	if res.RightErr != nil {
-		t.Fatalf("RightErr = %v; want nil (missing dir is not an error)", res.RightErr)
+func TestDoListMissingDirectoryIsNotAnError(t *testing.T) {
+	// A directory that exists on one side and not the other is the normal
+	// one-sided case, not a failure (SPEC.md §4.3).
+	res := DoList(ListJob{Abs: filepath.Join(t.TempDir(), "does-not-exist")})
+	if res.Err != nil {
+		t.Fatalf("Err = %v; want nil (missing dir is not an error)", res.Err)
+	}
+	if len(res.Entries) != 0 {
+		t.Fatalf("Entries = %v; want none", res.Entries)
 	}
 }
 

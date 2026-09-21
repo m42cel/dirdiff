@@ -8,8 +8,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
+	"github.com/m42cel/dirdiff/internal/pairtree"
 	"github.com/m42cel/dirdiff/internal/session"
-	"github.com/m42cel/dirdiff/internal/tree"
+	"github.com/m42cel/dirdiff/internal/sidetree"
 )
 
 func (m Model) View() string {
@@ -102,7 +103,7 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 		l, g, r := m.renderRootParentRow(leftWidth, rightWidth)
 		return []string{l}, []string{g}, []string{r}
 	}
-	if !m.cursorDir.Listed {
+	if !m.cursorDir.Listed() {
 		msg := []string{dimStyle.Render("Loading…")}
 		return msg, []string{""}, msg
 	}
@@ -134,7 +135,7 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 	// placeholder there, with no rows — even if it's empty on the side
 	// that does exist, in which case this replaces the "(empty)" set
 	// above. Checked last so it always wins.
-	switch m.cursorDir.Presence {
+	switch m.cursorDir.Presence() {
 	case diffmodel.LeftOnly:
 		right = []string{placeholderStyle.Render(doesNotExistText)}
 		gutter = []string{""}
@@ -152,16 +153,16 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 // in favor of color alone). dim marks a row shown only because it has a
 // descendant matching the active filter, not because it matches itself
 // (SPEC.md §4.7) — faded to distinguish a path-through from a real hit.
-func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, selected, dim bool, leftWidth, rightWidth int) (left, gutter, right string) {
+func renderRowTriple(n *pairtree.Node, sess *session.Session, spinnerFrame int, selected, dim bool, leftWidth, rightWidth int) (left, gutter, right string) {
 	glyph, style := statusGlyph(n, sess, spinnerFrame)
 	if dim {
 		style = style.Faint(true)
 	}
 	gutterCell := style.Render(glyph)
 
-	nameTag := n.Name + typeGlyph(n.Type)
+	nameTag := n.Name() + typeGlyph(n.Type)
 	leftName, rightName := nameTag, nameTag
-	switch n.Presence {
+	switch n.Presence() {
 	case diffmodel.LeftOnly:
 		rightName = ""
 	case diffmodel.RightOnly:
@@ -173,12 +174,13 @@ func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, sele
 	// up front — sized to the suffix's widest frame (" ..."), not
 	// whichever frame happens to be showing, so the row never reflows as
 	// the animation ticks.
+	pendingLeft, pendingRight := n.PendingListing()
 	leftBudget, rightBudget := leftWidth, rightWidth
 	if n.IsDir() {
-		if n.PendingListingLeft > 0 {
+		if pendingLeft > 0 {
 			leftBudget -= pendingSuffixWidth
 		}
-		if n.PendingListingRight > 0 {
+		if pendingRight > 0 {
 			rightBudget -= pendingSuffixWidth
 		}
 	}
@@ -201,8 +203,8 @@ func renderRowTriple(n *tree.Node, sess *session.Session, spinnerFrame int, sele
 	// selected row's highlighted width stays constant instead of
 	// growing and shrinking as the animation frame's length changes.
 	if n.IsDir() {
-		left += listingSuffix(n.PendingListingLeft, spinnerFrame)
-		right += listingSuffix(n.PendingListingRight, spinnerFrame)
+		left += listingSuffix(pendingLeft, spinnerFrame)
+		right += listingSuffix(pendingRight, spinnerFrame)
 	}
 	return left, gutterCell, right
 }
@@ -232,18 +234,19 @@ func (m Model) renderRootParentRow(leftWidth, rightWidth int) (left, gutter, rig
 	root := m.cursorDir
 	glyph, style := statusGlyph(root, m.sess, m.spinnerFrame)
 
+	pendingLeft, pendingRight := root.PendingListing()
 	leftBudget, rightBudget := leftWidth, rightWidth
-	if root.PendingListingLeft > 0 {
+	if pendingLeft > 0 {
 		leftBudget -= pendingSuffixWidth
 	}
-	if root.PendingListingRight > 0 {
+	if pendingRight > 0 {
 		rightBudget -= pendingSuffixWidth
 	}
 
 	left = cursorStyle.Render(style.Render(truncate(rootRowName(m.sess.LeftRoot)+"/", leftBudget)))
 	right = cursorStyle.Render(style.Render(truncate(rootRowName(m.sess.RightRoot)+"/", rightBudget)))
-	left += listingSuffix(root.PendingListingLeft, m.spinnerFrame)
-	right += listingSuffix(root.PendingListingRight, m.spinnerFrame)
+	left += listingSuffix(pendingLeft, m.spinnerFrame)
+	right += listingSuffix(pendingRight, m.spinnerFrame)
 	return left, cursorStyle.Render(style.Render(glyph)), right
 }
 
@@ -326,8 +329,8 @@ func animGlyph(frames []string, frame int) string {
 // distinct glyph with a distinct color (SPEC.md §6) so it reads even
 // without color. The one-sided arrow points toward the side the entry
 // exists on, not the side it's missing from.
-func statusGlyph(n *tree.Node, sess *session.Session, spinnerFrame int) (string, lipgloss.Style) {
-	switch n.Presence {
+func statusGlyph(n *pairtree.Node, sess *session.Session, spinnerFrame int) (string, lipgloss.Style) {
+	switch n.Presence() {
 	case diffmodel.LeftOnly:
 		return "←", missingStyle
 	case diffmodel.RightOnly:
@@ -335,7 +338,7 @@ func statusGlyph(n *tree.Node, sess *session.Session, spinnerFrame int) (string,
 	}
 
 	if n.IsDir() {
-		if n.ListErrLeft != nil || n.ListErrRight != nil {
+		if leftErr, rightErr := n.ListErrs(); leftErr != nil || rightErr != nil {
 			return "!", errorStyle
 		}
 		// Differs/CompareError is checked before PendingCompare: it's
@@ -401,21 +404,21 @@ func (m Model) renderDetails() string {
 		// one-sided pane placeholder, §4.3) rather than being printed as
 		// "0 directories · 0 files · 0 B", which would misreport absence
 		// as an empty-but-existing directory.
-		leftTotals, rightTotals := n.DescendantTotals()
+		leftTotals, rightTotals := n.SideTotals()
 		left, right := doesNotExistText, doesNotExistText
-		if n.Presence != diffmodel.RightOnly {
+		if n.Presence() != diffmodel.RightOnly {
 			left = totalsLabel(leftTotals)
 		}
-		if n.Presence != diffmodel.LeftOnly {
+		if n.Presence() != diffmodel.LeftOnly {
 			right = totalsLabel(rightTotals)
 		}
 		lines = append(lines, "left:  "+left, "right: "+right)
-	case n.HaveStat:
+	case haveStat(n.Left) && haveStat(n.Right):
 		lines = append(lines,
-			fmt.Sprintf("left:  size=%-22s mtime=%s", fileSizeLabel(n.LeftSize), n.LeftMtime.Local().Format("2006-01-02 15:04:05")),
-			fmt.Sprintf("right: size=%-22s mtime=%s", fileSizeLabel(n.RightSize), n.RightMtime.Local().Format("2006-01-02 15:04:05")))
+			fmt.Sprintf("left:  size=%-22s mtime=%s", fileSizeLabel(n.Left.Size), n.Left.Mtime.Local().Format("2006-01-02 15:04:05")),
+			fmt.Sprintf("right: size=%-22s mtime=%s", fileSizeLabel(n.Right.Size), n.Right.Mtime.Local().Format("2006-01-02 15:04:05")))
 	}
-	if n.Presence == diffmodel.Both {
+	if n.Presence() == diffmodel.Both {
 		lines = append(lines, "compared by: "+nodeCompareLevelLabel(n))
 	}
 	if n.Err != nil {
@@ -427,14 +430,19 @@ func (m Model) renderDetails() string {
 // detailsTitle names the selected row. The tree root has no name of its
 // own — it *is* the two compared directories — so above the root (SPEC.md
 // §4.3.1) it's titled with both root paths instead of an empty name.
-func (m Model) detailsTitle(n *tree.Node) string {
+func (m Model) detailsTitle(n *pairtree.Node) string {
 	if n == m.sess.Tree {
 		// Two full paths can easily outrun the panel, which has to stay
 		// exactly detailsContentLines tall (see padDetailsLines).
 		return truncate(fmt.Sprintf("%s ↔ %s  [compared roots]", m.sess.LeftRoot, m.sess.RightRoot), m.width)
 	}
-	return fmt.Sprintf("%s%s  [%s]", n.Name, typeGlyph(n.Type), presenceLabel(n.Presence))
+	return fmt.Sprintf("%s%s  [%s]", n.Name(), typeGlyph(n.Type), presenceLabel(n.Presence()))
 }
+
+// haveStat reports whether one side of a row has had its metadata read.
+// A row shows its two sizes and mtimes only when both sides have, since
+// the point of the pair of lines is the comparison between them.
+func haveStat(n *sidetree.Node) bool { return n != nil && n.HaveStat }
 
 // totalsLabel summarizes one side of a directory's subtree: how many
 // entries it holds, and how large they are.
@@ -445,7 +453,7 @@ func (m Model) detailsTitle(n *tree.Node) string {
 // still missing — and as an unknown "?" when none has been, which is the
 // steady state under --level=none. A directory holding no files at all
 // reports a plain 0 B: nothing is unknown there.
-func totalsLabel(t tree.SideTotals) string {
+func totalsLabel(t sidetree.Totals) string {
 	parts := []string{
 		// "directory"/"directories" is spelled out in full rather than
 		// abbreviated to "dirs" — it's the one count in the details panel
@@ -553,11 +561,11 @@ func compareLevelLabel(level diffmodel.CompareLevel) string {
 	}
 }
 
-// nodeCompareLevelLabel is compareLevelLabel for a tree.Node, covering a
+// nodeCompareLevelLabel is compareLevelLabel for a pairtree.Node, covering a
 // directory whose descendants were compared at more than one level
-// (tree.rollupLevel's LevelMixed) as "mixed" instead of picking one of
+// (pairtree.rollupLevel's LevelMixed) as "mixed" instead of picking one of
 // them arbitrarily.
-func nodeCompareLevelLabel(n *tree.Node) string {
+func nodeCompareLevelLabel(n *pairtree.Node) string {
 	if n.IsDir() && n.LevelMixed {
 		return "mixed"
 	}

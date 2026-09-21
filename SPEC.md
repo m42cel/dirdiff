@@ -30,7 +30,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | Flag | Description |
 |---|---|
 | `--level=<level>` | Initial comparison level to auto-apply recursively across the whole tree as results come in. One of `metadata`, `content`, `none`. Default: `metadata`. `none` opts back into existence-only (listing/matching, no auto-compare). |
-| `--scan-workers=<n>` | Concurrency of the listing worker pool. Default: `1` (§8.2). |
+| `--scan-workers=<n>` | Concurrency of the listing worker pool. Default: `2` (§8.2). |
 | `--compare-workers=<n>` | Concurrency of the checksum/compare worker pool. Default: `GOMAXPROCS` (§8.2). |
 | `--version` | Print version, commit and platform to stdout and exit 0, without entering the TUI. Valid on its own — the two directory arguments are not required with it. |
 
@@ -462,12 +462,14 @@ starve the ambient directory-listing scan (and vice versa), which matters
 because listing is what makes the UI feel instantly responsive when you
 navigate somewhere new.
 
-The two pools are sized independently — `--scan-workers=<n>` (default `1`)
+The two pools are sized independently — `--scan-workers=<n>` (default `2`)
 for listing, `--compare-workers=<n>` (default `GOMAXPROCS`) for comparison —
 rather than sharing one knob. Listing is cheap, low-CPU directory-metadata
-I/O that doesn't benefit from scaling with core count, and on a mechanical
-disk more concurrent listing jobs can mean more seeking for no throughput
-gain; comparison, especially at the content level, does real per-byte CPU
+I/O that doesn't benefit much from scaling with core count, and on a
+mechanical disk more concurrent listing jobs can mean more seeking for no
+throughput gain — but it wants at least two, because a listing job reads
+one side (§3) and a single worker would read a directory's two sides one
+after the other; comparison, especially at the content level, does real per-byte CPU
 work alongside the I/O, so scaling it with `GOMAXPROCS` is the more
 defensible default of the two. Both flags only set the starting size —
 either pool can be resized while dirdiff is running via the `w` popup

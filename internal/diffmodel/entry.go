@@ -19,6 +19,20 @@ const (
 	Symlink
 )
 
+// Side names one of the two compared trees. Listing and metadata are
+// per-side work — each tree is read on its own, and a subtree may be
+// paired with any other — so every job and result below the pairing
+// layer carries the side it belongs to.
+type Side int
+
+const (
+	Left Side = iota
+	Right
+)
+
+// Sides is every Side, for callers that do the same thing to both.
+var Sides = [...]Side{Left, Right}
+
 // Presence indicates which side(s) an entry exists on.
 type Presence int
 
@@ -107,13 +121,27 @@ func ClassifyRow(t EntryType, p Presence, r CompareResult) RowStatus {
 	return RowNone
 }
 
-// ListedChild describes one merged entry discovered while listing a
-// directory on both sides: a name matched (or unmatched) by (name, type)
-// per SPEC.md §3.1.
-type ListedChild struct {
-	Name     string
-	Type     EntryType
-	Presence Presence
+// ListedEntry describes one entry discovered while listing a directory
+// on one side: what readdir reports about it and nothing more. Matching
+// the two sides' entries by (name, type) per SPEC.md §3.1 happens a
+// layer up, over the two side trees, so the same listing can serve any
+// number of pairings.
+type ListedEntry struct {
+	Name string
+	Type EntryType
+}
+
+// EntryLess is the single definition of the order entries are held and
+// rendered in (SPEC.md §4.1): directories before everything else, then
+// alphabetically by exact byte comparison — no case folding and no
+// Unicode normalization, the same rule matching uses (SPEC.md §3.1).
+// Every tree that stores entries sorts by this, so a pane's order never
+// depends on which layer happened to produce the listing.
+func EntryLess(aName string, aType EntryType, bName string, bType EntryType) bool {
+	if (aType == Dir) != (bType == Dir) {
+		return aType == Dir
+	}
+	return aName < bName
 }
 
 // StatInfo holds size/mtime metadata for both sides of a compared entry,

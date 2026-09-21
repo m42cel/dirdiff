@@ -98,6 +98,60 @@ func TestSetFocusReordersAlreadyQueuedJobs(t *testing.T) {
 	}
 }
 
+func TestSetFociRanksEachNamespaceAgainstItsOwnFocus(t *testing.T) {
+	q := New[string]()
+	for _, key := range []string{"L/other", "L/dir/child", "R/other", "R/dir/child"} {
+		q.Upsert(key, key, nil)
+	}
+	q.SetFoci("L/dir", "R/dir")
+
+	// Each side's focused subtree outranks that side's unrelated work, and
+	// the two sides interleave by their own distances — never by a
+	// distance measured against the other side's focus.
+	for _, want := range []string{"L/dir/child", "R/dir/child", "L/other", "R/other"} {
+		_, key, _ := q.Pop()
+		if key != want {
+			t.Fatalf("Pop() key = %q; want %q", key, want)
+		}
+	}
+}
+
+// A key must never be measured against another namespace's focus: the
+// two trees share no ancestor, so the "distance" between them is just
+// the sum of two depths, which can undercut a genuine same-tree
+// distance. Here R/other is a real 4 hops from the right pane but would
+// look like 3 hops from the left pane's root.
+func TestSetFociNeverMeasuresAcrossNamespaces(t *testing.T) {
+	q := New[string]()
+	q.Upsert("R/other", "R/other", nil)
+	q.Upsert("R/very/deep/dir/child", "R/very/deep/dir/child", nil)
+	q.SetFoci("L", "R/very/deep/dir")
+
+	_, key, _ := q.Pop()
+	if key != "R/very/deep/dir/child" {
+		t.Fatalf("Pop() key = %q; want %q — the right pane's own subtree, not the job that happens to look close to the left root", key, "R/very/deep/dir/child")
+	}
+}
+
+// A namespace nobody is focused on — a suspended pairing's leftovers, or
+// anything before the first navigation — still pops breadth-first within
+// its own tree rather than jumping the queue.
+func TestSetFociLeavesAnUnfocusedNamespaceInDepthOrder(t *testing.T) {
+	q := New[string]()
+	q.Upsert("p1/a/b", "p1/a/b", nil)
+	q.Upsert("p1/a", "p1/a", nil)
+	q.Upsert("L/dir/child", "L/dir/child", nil)
+	q.SetFoci("L/dir")
+
+	want := []string{"L/dir/child", "p1/a", "p1/a/b"}
+	for _, w := range want {
+		_, key, _ := q.Pop()
+		if key != w {
+			t.Fatalf("Pop() key = %q; want %q", key, w)
+		}
+	}
+}
+
 func TestSetFocusDoesNotAffectAlreadyActiveJobs(t *testing.T) {
 	q := New[string]()
 	q.Upsert("a", "a", nil)

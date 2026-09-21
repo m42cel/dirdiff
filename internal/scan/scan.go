@@ -1,8 +1,8 @@
-// Package scan does the actual filesystem I/O: listing a directory on
-// both sides and merging the result, and comparing one entry at a given
-// CompareLevel. Every function here is a pure, self-contained operation
-// on the two absolute paths it's given — nothing here touches shared
-// state, so these are safe to run concurrently from a worker pool.
+// Package scan does the actual filesystem I/O: listing one side's
+// directory, and comparing one entry at a given CompareLevel. Every
+// function here is a pure, self-contained operation on the absolute
+// paths it's given — nothing here touches shared state, so these are
+// safe to run concurrently from a worker pool.
 package scan
 
 import (
@@ -17,81 +17,42 @@ import (
 	"github.com/m42cel/dirdiff/internal/diffmodel"
 )
 
-// ListJob asks for the merged listing of RelPath under both roots.
+// ListJob asks for RelPath to be listed on one side. Listing is
+// per-side work: the two trees are read independently and matched
+// afterwards, so a directory paired with one at an entirely different
+// path needs no listing of its own.
 type ListJob struct {
-	RelPath           string
-	LeftAbs, RightAbs string
+	Side    diffmodel.Side
+	RelPath string
+	Abs     string
 }
 
-// ListResult is the outcome of a ListJob. LeftErr/RightErr are set only
-// for read failures other than "doesn't exist" (e.g. permission denied) —
-// a missing side is not an error, it's how one-sided entries are
+// ListResult is the outcome of a ListJob. Err is set only for a read
+// failure other than "doesn't exist" (e.g. permission denied) — a
+// missing directory is not an error, it's how one-sided entries are
 // discovered (SPEC.md §4.3).
 type ListResult struct {
-	RelPath           string
-	Children          []diffmodel.ListedChild
-	LeftErr, RightErr error
+	Side    diffmodel.Side
+	RelPath string
+	Entries []diffmodel.ListedEntry
+	Err     error
 }
 
-// DoList lists job.LeftAbs and job.RightAbs and merges them by (name,
-// type) per SPEC.md §3.1, sorted with directories first, then
-// alphabetically (SPEC.md §4.1). The two sides are read concurrently, not
-// sequentially: on two different physical devices (or even just two
-// distant regions of the same one) the job's latency is then bounded by
-// the slower side alone, instead of the sum of both.
+// DoList lists job.Abs in diffmodel.EntryLess order (SPEC.md §4.1) —
+// the order the panes render in, so a listing is already in it before
+// any matching happens.
 func DoList(job ListJob) ListResult {
-	var right []typedEntry
-	var rightErr error
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		right, rightErr = readDirTyped(job.RightAbs)
-	}()
-
-	left, leftErr := readDirTyped(job.LeftAbs)
-	wg.Wait()
-
-	type key struct {
-		name string
-		typ  diffmodel.EntryType
-	}
-	presence := map[key]diffmodel.Presence{}
-	for _, e := range left {
-		presence[key{e.name, e.typ}] = diffmodel.LeftOnly
-	}
-	for _, e := range right {
-		k := key{e.name, e.typ}
-		if _, ok := presence[k]; ok {
-			presence[k] = diffmodel.Both
-		} else {
-			presence[k] = diffmodel.RightOnly
-		}
-	}
-
-	children := make([]diffmodel.ListedChild, 0, len(presence))
-	for k, p := range presence {
-		children = append(children, diffmodel.ListedChild{Name: k.name, Type: k.typ, Presence: p})
-	}
-	sort.Slice(children, func(i, j int) bool {
-		if (children[i].Type == diffmodel.Dir) != (children[j].Type == diffmodel.Dir) {
-			return children[i].Type == diffmodel.Dir
-		}
-		return children[i].Name < children[j].Name
+	entries, err := readDirTyped(job.Abs)
+	sort.Slice(entries, func(i, j int) bool {
+		return diffmodel.EntryLess(entries[i].Name, entries[i].Type, entries[j].Name, entries[j].Type)
 	})
-
-	return ListResult{RelPath: job.RelPath, Children: children, LeftErr: leftErr, RightErr: rightErr}
-}
-
-type typedEntry struct {
-	name string
-	typ  diffmodel.EntryType
+	return ListResult{Side: job.Side, RelPath: job.RelPath, Entries: entries, Err: err}
 }
 
 // readDirTyped lists dir, classifying each entry as File, Dir, or
 // Symlink without following symlinks (SPEC.md §7). A missing directory
 // is not an error — it's the normal "doesn't exist on this side" case.
-func readDirTyped(dir string) ([]typedEntry, error) {
+func readDirTyped(dir string) ([]diffmodel.ListedEntry, error) {
 	des, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -99,7 +60,7 @@ func readDirTyped(dir string) ([]typedEntry, error) {
 		}
 		return nil, err
 	}
-	out := make([]typedEntry, 0, len(des))
+	out := make([]diffmodel.ListedEntry, 0, len(des))
 	for _, de := range des {
 		t := diffmodel.File
 		if de.Type()&os.ModeSymlink != 0 {
@@ -107,7 +68,7 @@ func readDirTyped(dir string) ([]typedEntry, error) {
 		} else if de.IsDir() {
 			t = diffmodel.Dir
 		}
-		out = append(out, typedEntry{name: de.Name(), typ: t})
+		out = append(out, diffmodel.ListedEntry{Name: de.Name(), Type: t})
 	}
 	return out, nil
 }

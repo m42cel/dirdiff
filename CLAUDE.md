@@ -36,46 +36,70 @@ go mod tidy                 # after adding/removing an import — go get alone
 
 ## Architecture
 
-Six packages, layered bottom-up; each only depends on the ones below it:
+Seven packages, layered bottom-up; each only depends on the ones below it:
 
 - **`internal/diffmodel`** — shared vocabulary, no I/O, no dependencies:
   `EntryType` (File/Dir/Symlink — matched independently per spec §3.1, so
   a file and a directory with the same name never merge into one row),
+  `Side` (Left/Right — listing and metadata are per-side work),
   `Presence`, `CompareLevel`/`CompareResult` (ordered shallowest-to-deepest
-  so callers compare levels with plain `<`), `ListedChild`, `StatInfo`,
-  and `RowStatus`/`ClassifyRow` — the single definition of which status a
+  so callers compare levels with plain `<`), `ListedEntry`, `StatInfo`,
+  `EntryLess` (the single definition of the dirs-first-then-alphabetical
+  order every tree stores entries in, spec §4.1), and
+  `RowStatus`/`ClassifyRow` — the single definition of which status a
   row has for filtering (spec §4.7), used both by the UI's filter and by
-  the per-subtree tallies in `tree`, so the two can't drift apart.
+  the per-subtree tallies in `pairtree`, so the two can't drift apart.
 - **`internal/workqueue`** — generic, key-deduplicated priority queue
   (`Queue[T]`) backing both worker pools. Pop order is driven by
   tree-edge distance from a live focus path rather than fixed tiers
   (spec §8.3): descendants of the focus path always pop before anything
-  else, and within each group, closer jobs pop first. `SetFocus` changes
-  the focus path and re-heapifies (`heap.Init`, O(n)) to reorder
+  else, and within each group, closer jobs pop first. `SetFocus` (one
+  focus for the whole queue) and `SetFoci` (one per key namespace, for a
+  queue whose keys span unconnected trees — the listing queue's `L/…` and
+  `R/…`) change the focus and re-heapify (`heap.Init`, O(n)) to reorder
   already-queued jobs — cheap enough since it only runs on user
-  navigation, not per-job. `Upsert` merges a job already queued under the
+  navigation, not per-job. A key is only ever ranked against the focus
+  sharing its own namespace: two side trees share no ancestor, so a
+  "distance" across them is the sum of two depths, not a tree distance.
+  `Upsert` merges a job already queued under the
   same key instead of duplicating it; `Pop`/`Done` track in-flight jobs
   so `IsPending` reports queued-or-running for the UI's pending glyph.
 - **`internal/scan`** — pure filesystem I/O (`DoList`, `DoCompare`).
   Every function takes absolute paths and returns a result; nothing here
   touches shared state, so it's safe to call concurrently from workers.
-  Symlinks are never followed — any compare level just compares the two
-  `readlink` targets as strings (spec §7).
-- **`internal/tree`** — the mutable `Node` tree (one node per matched/
-  unmatched entry) and the rollup logic (spec §3.3). `ApplyListing` and
-  `ApplyCompareResult` are the only mutators; `ApplyCompareResult` is a
-  no-op on Level/Result if the incoming level isn't deeper than what's
-  already known (spec §5.3 monotonicity), though stat metadata is always
-  refreshed. **Nodes are mutated exclusively from the UI's Update loop**
-  (a single goroutine) — nothing in this package takes a lock. Every
-  per-subtree aggregate the UI reads — the row filter's per-status
-  descendant tallies and the details panel's per-side `SideTotals`
-  (counts + size, spec §4.2) — is kept incrementally via one upward
-  `subtreeDelta` walk per mutation, never a subtree walk at render time;
-  `ownContribution` is the single definition of what one node counts
-  for, so the oracle tests in `descendants_test.go`/`totals_test.go`
-  have exactly one place to disagree with.
-  Each node also carries `descMatches`, a per-`RowStatus` tally of its
+  `DoList` reads **one** side's directory — matching the two sides
+  happens a layer up, so a directory paired with one at an entirely
+  different path needs no listing of its own. Symlinks are never followed
+  — any compare level just compares the two `readlink` targets as strings
+  (spec §7).
+- **`internal/sidetree`** — one plain `Node` tree per side, one node per
+  real filesystem entry: names and types from listing, size/mtime from
+  metadata results, and nothing about the other side. A side node is
+  shared by every pairing that covers it, which is what makes listing
+  never repeat per pairing. Its per-subtree `Totals` (counts + size, spec
+  §4.2) are kept incrementally via one upward walk per mutation, never a
+  subtree walk at render time; `ownContribution` is the single definition
+  of what one node counts for, so the oracle test in `sidetree_test.go`
+  has exactly one place to disagree with. `Tree.Index` is a plain RelPath
+  map with no dirs-only mirror: within one real directory a name
+  identifies exactly one entry, so the file/directory collision that
+  needed one only ever existed because a merged tree overlaid two
+  filesystems.
+- **`internal/pairtree`** — the merged `Node` tree of one *pairing* (two
+  directories matched entry by entry) and the rollup logic (spec §3.3).
+  A node holds `Left`/`Right *sidetree.Node` rather than a name or
+  metadata of its own; `Presence`/`Name`/`Listed`/`SideTotals` are
+  derived from those. `Merge` and `ApplyCompareResult` are the only
+  mutators: `Merge` extends a directory's children from the union of its
+  two sides by `(name, type)` — **gated on every side it has being
+  listed**, so a row's `Presence` is fixed at creation and never mutates
+  — and `ApplyCompareResult` is a no-op if the incoming level isn't
+  deeper than what's already known (spec §5.3 monotonicity). Metadata is
+  deliberately *not* stored here: a size is a fact about one side's file,
+  so it lives in `sidetree` and is shared with every other pairing over
+  the same files. **Nodes are mutated exclusively from the UI's Update
+  loop** (a single goroutine) — nothing in this package takes a lock.
+  Each node carries `descMatches`, a per-`RowStatus` tally of its
   descendants that answers the filter's "is there a matching row below?"
   in O(1) instead of a subtree walk per render; `AddChild` is therefore
   the only supported way to link a node into the tree (assigning
@@ -83,11 +107,18 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   is the only thing that moves a node between statuses afterwards. The
   recursive walk lives on as the oracle in `descendants_test.go` — any
   new mutator must keep the two in agreement.
-- **`internal/session`** — orchestrates the two worker pools and decides
-  what to enqueue and when (`Navigate` calls `SetFocus` on both queues
-  for reprioritization, `TriggerCompare`/`armRecursive` for opt-in
-  comparison, spec §5.2/§5.4).
-  Framework-agnostic on purpose: it exposes plain channels
+- **`internal/session`** — owns the two side trees and the pairing over
+  them, orchestrates the two worker pools, and decides what to enqueue
+  and when (`Navigate` sets both side foci on the listing queue and the
+  pairing focus on the compare queue, `TriggerCompare`/`armRecursive` for
+  opt-in comparison, spec §5.2/§5.4). `OnListResult` is a two-step
+  router: apply the listing to the side tree it came from and enqueue
+  that side's new subdirectories, then fan out to the pairing, where
+  `Merge` turns whatever now has a counterpart into rows. `merge`
+  descends into a new directory row whose two sides are *already* listed
+  — a row created after its subtree was scanned has no listing result
+  left to arrive. Listing keys are namespaced `L/…`/`R/…`; compare keys
+  are pairing-relative paths. Framework-agnostic on purpose: it exposes plain channels
   (`ListResults()`/`CompareResults()`), not `tea.Cmd`. A recursive
   compare trigger arms *both* the target directory and its children
   (`PendingRecursiveLevel`) so the intent survives even if the directory
@@ -108,9 +139,10 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   `View()` runs once per Bubble Tea message — every scan/compare result
   and every spinner tick — so anything it does per row is on a very hot
   path: keep it O(visible rows), never O(subtree). That's why the row
-  filter and the details panel's directory totals both read `tree`'s
-  aggregates instead of walking the subtree themselves. `atRootParent`
-  is the one view with no `tree.Node` of its own (spec §4.3.1):
+  filter reads `pairtree`'s per-status tallies and the details panel's
+  directory totals read `sidetree`'s, instead of walking the subtree
+  themselves. `atRootParent`
+  is the one view with no `pairtree.Node` of its own (spec §4.3.1):
   `cursorDir` stays the root and `visibleChildren` synthesizes a single
   unfilterable row for it, so the two roots' whole-tree totals are
   selectable without inventing a parent node the scanner would then try
@@ -123,9 +155,10 @@ Six packages, layered bottom-up; each only depends on the ones below it:
   §2.2), wires up `session.New` + `ui.New` + `tea.Program`.
 
 Entry matching (spec §3.1) is exact byte-for-byte name comparison — no
-case-insensitive or Unicode-normalized matching — and directories sort
-before files, then alphabetically (spec §4.1), consistently in both
-`scan.DoList` and `tree.ApplyListing`.
+case-insensitive or Unicode-normalized matching, and by `(name, type)`,
+so a file and a directory of the same name are two unrelated rows.
+Directories sort before files, then alphabetically (spec §4.1), via the
+one `diffmodel.EntryLess` every layer that stores entries calls.
 
 ## Testing notes
 
@@ -138,11 +171,11 @@ before files, then alphabetically (spec §4.1), consistently in both
   loop being the sole tree mutator. Write new session tests the same way
   rather than reaching into tree state directly.
 - There's no automated test for the Bubble Tea layer itself (raw terminal
-  I/O). It was manually smoke-tested by driving the real binary through a
-  pty (Python's `pty` module, responding to Bubble Tea's terminal
-  capability queries) — worth doing again for any change to key handling
-  or rendering, since that's exactly how the multi-rune key bug above was
-  found.
+  I/O). `scripts/pty-smoke.py` drives the real binary through a pty
+  (answering the terminal capability queries Bubble Tea blocks on before
+  its first paint) and prints what each keypress painted — worth running
+  for any change to key handling or rendering, since that's exactly how
+  the multi-rune key bug above was found.
 
 ## Code comments
 

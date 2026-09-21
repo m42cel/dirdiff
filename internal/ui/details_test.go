@@ -7,7 +7,7 @@ import (
 	"github.com/m42cel/dirdiff/internal/diffmodel"
 	"github.com/m42cel/dirdiff/internal/scan"
 	"github.com/m42cel/dirdiff/internal/session"
-	"github.com/m42cel/dirdiff/internal/tree"
+	"github.com/m42cel/dirdiff/internal/sidetree"
 )
 
 // newTestModel builds a Model over a real Session on two empty temp
@@ -21,6 +21,37 @@ func newTestModel(t *testing.T) (Model, *session.Session) {
 	m := New(sess)
 	m.width, m.height = 100, 30
 	return m, sess
+}
+
+// entries spells a listing compactly: a trailing "/" makes a directory,
+// "@" a symlink, anything else a file.
+func entries(spec ...string) []diffmodel.ListedEntry {
+	out := make([]diffmodel.ListedEntry, 0, len(spec))
+	for _, s := range spec {
+		e := diffmodel.ListedEntry{Name: s, Type: diffmodel.File}
+		switch {
+		case strings.HasSuffix(s, "/"):
+			e.Name, e.Type = strings.TrimSuffix(s, "/"), diffmodel.Dir
+		case strings.HasSuffix(s, "@"):
+			e.Name, e.Type = strings.TrimSuffix(s, "@"), diffmodel.Symlink
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// listBoth feeds the same listing of relPath to both sides, the way two
+// listing jobs over identical directories would deliver it.
+func listBoth(sess *session.Session, relPath string, spec ...string) {
+	for _, sd := range diffmodel.Sides {
+		listSide(sess, sd, relPath, spec...)
+	}
+}
+
+// listSide feeds one side's listing alone, for entries that exist on
+// only one of the two trees.
+func listSide(sess *session.Session, sd diffmodel.Side, relPath string, spec ...string) {
+	sess.OnListResult(scan.ListResult{Side: sd, RelPath: relPath, Entries: entries(spec...)})
 }
 
 func press(t *testing.T, m Model, key string) Model {
@@ -68,31 +99,31 @@ func TestFileSizeLabelKeepsExactBytes(t *testing.T) {
 func TestTotalsLabel(t *testing.T) {
 	cases := []struct {
 		name   string
-		totals tree.SideTotals
+		totals sidetree.Totals
 		want   string
 	}{{
-		name:   "nothing compared yet reports an unknown size",
-		totals: tree.SideTotals{Dirs: 2, Files: 3},
+		name:   "nothing statted yet reports an unknown size",
+		totals: sidetree.Totals{Dirs: 2, Files: 3},
 		want:   "2 directories · 3 files · size ?",
 	}, {
-		name:   "partially compared size is a lower bound",
-		totals: tree.SideTotals{Dirs: 2, Files: 4, Size: 1024, SizedFiles: 1},
+		name:   "partially statted size is a lower bound",
+		totals: sidetree.Totals{Dirs: 2, Files: 4, Size: 1024, SizedFiles: 1},
 		want:   "2 directories · 4 files · ≥1.0 KiB (1/4 files sized)",
 	}, {
-		name:   "fully compared size is exact",
-		totals: tree.SideTotals{Dirs: 1, Files: 2, Size: 2048, SizedFiles: 2},
+		name:   "fully statted size is exact",
+		totals: sidetree.Totals{Dirs: 1, Files: 2, Size: 2048, SizedFiles: 2},
 		want:   "1 directory · 2 files · 2.0 KiB",
 	}, {
 		name:   "empty directory has nothing unknown about it",
-		totals: tree.SideTotals{},
+		totals: sidetree.Totals{},
 		want:   "0 directories · 0 files · 0 B",
 	}, {
 		name:   "symlinks are counted apart from files and never sized",
-		totals: tree.SideTotals{Files: 1, Symlinks: 2, Size: 512, SizedFiles: 1},
+		totals: sidetree.Totals{Files: 1, Symlinks: 2, Size: 512, SizedFiles: 1},
 		want:   "0 directories · 1 file · 2 links · 512 B",
 	}, {
 		name:   "every count reads singular at exactly one",
-		totals: tree.SideTotals{Dirs: 1, Files: 1, Symlinks: 1, Size: 512, SizedFiles: 1},
+		totals: sidetree.Totals{Dirs: 1, Files: 1, Symlinks: 1, Size: 512, SizedFiles: 1},
 		want:   "1 directory · 1 file · 1 link · 512 B",
 	}}
 	for _, c := range cases {
@@ -104,19 +135,14 @@ func TestTotalsLabel(t *testing.T) {
 
 func TestDetailsPanelShowsDirectoryTotals(t *testing.T) {
 	m, sess := newTestModel(t)
-	sess.OnListResult(scan.ListResult{RelPath: "", Children: []diffmodel.ListedChild{
-		{Name: "sub", Type: diffmodel.Dir, Presence: diffmodel.Both},
-	}})
-	sess.OnListResult(scan.ListResult{RelPath: "sub", Children: []diffmodel.ListedChild{
-		{Name: "a.txt", Type: diffmodel.File, Presence: diffmodel.Both},
-		{Name: "b.txt", Type: diffmodel.File, Presence: diffmodel.Both},
-	}})
+	listBoth(sess, "", "sub/")
+	listBoth(sess, "sub", "a.txt", "b.txt")
 
 	// Cursor on "sub" in the root listing: its totals are its subtree's,
 	// not its own.
 	details := m.renderDetails()
 	if !strings.Contains(details, "0 directories · 2 files · size ?") {
-		t.Errorf("uncompared directory details = %q; want the file count with no size yet", details)
+		t.Errorf("unstatted directory details = %q; want the file count with no size yet", details)
 	}
 
 	sess.OnCompareResult(scan.CompareOutcome{
@@ -125,7 +151,7 @@ func TestDetailsPanelShowsDirectoryTotals(t *testing.T) {
 	})
 	details = m.renderDetails()
 	if !strings.Contains(details, "≥1.0 KiB (1/2 files sized)") {
-		t.Errorf("partly compared directory details = %q; want a lower-bound size", details)
+		t.Errorf("partly statted directory details = %q; want a lower-bound size", details)
 	}
 
 	sess.OnCompareResult(scan.CompareOutcome{
@@ -134,23 +160,19 @@ func TestDetailsPanelShowsDirectoryTotals(t *testing.T) {
 	})
 	details = m.renderDetails()
 	if !strings.Contains(details, "left:  0 directories · 2 files · 2.0 KiB") {
-		t.Errorf("fully compared directory details = %q; want an exact left total", details)
+		t.Errorf("fully statted directory details = %q; want an exact left total", details)
 	}
 	if !strings.Contains(details, "right: 0 directories · 2 files · 4.0 KiB") {
-		t.Errorf("fully compared directory details = %q; want the right side totalled separately", details)
+		t.Errorf("fully statted directory details = %q; want the right side totalled separately", details)
 	}
 }
 
 func TestDetailsPanelMarksMissingSideAsNotExisting(t *testing.T) {
 	m, sess := newTestModel(t)
-	sess.OnListResult(scan.ListResult{RelPath: "", Children: []diffmodel.ListedChild{
-		{Name: "left-only", Type: diffmodel.Dir, Presence: diffmodel.LeftOnly},
-		{Name: "right-only", Type: diffmodel.Dir, Presence: diffmodel.RightOnly},
-	}})
-	sess.OnListResult(scan.ListResult{RelPath: "left-only", Children: []diffmodel.ListedChild{
-		{Name: "a.txt", Type: diffmodel.File, Presence: diffmodel.LeftOnly},
-	}})
-	sess.OnListResult(scan.ListResult{RelPath: "right-only", Children: nil})
+	listSide(sess, diffmodel.Left, "", "left-only/")
+	listSide(sess, diffmodel.Right, "", "right-only/")
+	listSide(sess, diffmodel.Left, "left-only", "a.txt")
+	listSide(sess, diffmodel.Right, "right-only")
 
 	lines := func() []string { return strings.Split(m.renderDetails(), "\n") }
 
@@ -159,7 +181,7 @@ func TestDetailsPanelMarksMissingSideAsNotExisting(t *testing.T) {
 	// names it as absent, not "0 directories · 0 files · 0 B".
 	got := lines()
 	if got[1] != "left:  0 directories · 1 file · size ?" {
-		t.Errorf("left-only dir's left line = %q; want its real (uncompared) totals", got[1])
+		t.Errorf("left-only dir's left line = %q; want its real (unstatted) totals", got[1])
 	}
 	if got[2] != "right: "+doesNotExistText {
 		t.Errorf("left-only dir's right line = %q; want the does-not-exist placeholder, not a zeroed total", got[2])
@@ -177,9 +199,7 @@ func TestDetailsPanelMarksMissingSideAsNotExisting(t *testing.T) {
 
 func TestAscendAboveRootShowsBothRootsAsOneRow(t *testing.T) {
 	m, sess := newTestModel(t)
-	sess.OnListResult(scan.ListResult{RelPath: "", Children: []diffmodel.ListedChild{
-		{Name: "a.txt", Type: diffmodel.File, Presence: diffmodel.Both},
-	}})
+	listBoth(sess, "", "a.txt")
 	sess.OnCompareResult(scan.CompareOutcome{
 		RelPath: "a.txt", Level: diffmodel.SizeMtime, Result: diffmodel.Same,
 		Stat: &diffmodel.StatInfo{LeftSize: 2048, RightSize: 2048},
@@ -222,7 +242,7 @@ func TestAscendAboveRootShowsBothRootsAsOneRow(t *testing.T) {
 	if m.atRootParent {
 		t.Fatal("entering the root row should descend back into the root listing")
 	}
-	if got := m.visibleChildren(); len(got) != 1 || got[0].Name != "a.txt" {
+	if got := m.visibleChildren(); len(got) != 1 || got[0].Name() != "a.txt" {
 		t.Fatalf("back in the root listing, want the a.txt row; got %v", got)
 	}
 }

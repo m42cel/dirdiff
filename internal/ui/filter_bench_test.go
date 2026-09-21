@@ -5,29 +5,26 @@ import (
 	"testing"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
-	"github.com/m42cel/dirdiff/internal/tree"
+	"github.com/m42cel/dirdiff/internal/pairtree"
+	"github.com/m42cel/dirdiff/internal/sidetree"
 )
 
 // benchTree builds a branch^depth tree of entirely equal files — the
 // worst case for the filter, since no row anywhere matches "different"
 // and the old subtree walk had to visit every node before it could say
 // so.
-func benchTree(branch, depth int) (*tree.Node, int) {
-	root := &tree.Node{Type: diffmodel.Dir, Presence: diffmodel.Both, Listed: true}
+func benchTree(branch, depth int) (*pairtree.Node, int) {
+	root := benchRow("", diffmodel.Dir, diffmodel.Unknown)
 	n := 0
-	var fill func(p *tree.Node, d int)
-	fill = func(p *tree.Node, d int) {
+	var fill func(p *pairtree.Node, d int)
+	fill = func(p *pairtree.Node, d int) {
 		for i := 0; i < branch; i++ {
-			c := &tree.Node{
-				Name:     fmt.Sprintf("entry-%04d", i),
-				Presence: diffmodel.Both,
-				Result:   diffmodel.Same,
-			}
+			typ := diffmodel.File
 			if d > 0 {
-				c.Type = diffmodel.Dir
-				c.Listed = true
+				typ = diffmodel.Dir
 			}
-			tree.AddChild(p, c)
+			c := benchRow(fmt.Sprintf("entry-%04d", i), typ, diffmodel.Same)
+			pairtree.AddChild(p, c)
 			n++
 			if d > 0 {
 				fill(c, d-1)
@@ -36,6 +33,18 @@ func benchTree(branch, depth int) (*tree.Node, int) {
 	}
 	fill(root, depth)
 	return root, n
+}
+
+// benchRow is a both-sided row whose two sides are listed, built
+// directly rather than through a merge: this benchmark cares only about
+// what filterChildren costs over a large tree.
+func benchRow(name string, typ diffmodel.EntryType, result diffmodel.CompareResult) *pairtree.Node {
+	return &pairtree.Node{
+		Left:   &sidetree.Node{Name: name, Type: typ, Listed: true},
+		Right:  &sidetree.Node{Name: name, Type: typ, Listed: true},
+		Type:   typ,
+		Result: result,
+	}
 }
 
 // BenchmarkFilterChildren guards the fix for the "high CPU while a

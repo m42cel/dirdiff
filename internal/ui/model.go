@@ -12,9 +12,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
+	"github.com/m42cel/dirdiff/internal/pairtree"
 	"github.com/m42cel/dirdiff/internal/scan"
 	"github.com/m42cel/dirdiff/internal/session"
-	"github.com/m42cel/dirdiff/internal/tree"
 )
 
 const (
@@ -48,7 +48,7 @@ const (
 type Model struct {
 	sess *session.Session
 
-	cursorDir    *tree.Node
+	cursorDir    *pairtree.Node
 	cursorIdx    int
 	scrollOffset int
 	showHelp     bool
@@ -485,8 +485,8 @@ func (m *Model) jumpDiff(forward bool) {
 	}
 }
 
-func isDiffering(n *tree.Node) bool {
-	if n.Presence != diffmodel.Both {
+func isDiffering(n *pairtree.Node) bool {
+	if n.Presence() != diffmodel.Both {
 		return true
 	}
 	return n.Result == diffmodel.Differs || n.Result == diffmodel.CompareError

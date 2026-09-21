@@ -438,19 +438,24 @@ func (s *Session) Navigate(to *pairtree.Node) {
 	s.examineQ.SetFoci(append(foci, pairKey(to.RelPath))...)
 }
 
-// TriggerCompare starts a comparison at level for dir's children
-// (SPEC.md §5.2). If recursive is false, only dir's direct file/symlink
-// children are examined. If recursive is true, the entire subtree rooted
-// at dir is armed: already-known descendants are enqueued immediately,
-// and any not yet discovered by the background listing scan are picked
-// up as they're found (via OnListResult). Either way, dir is normally
-// also the current navigation focus, so these jobs already sort ahead of
-// unrelated background work (SPEC.md §8.3) without needing a priority of
-// their own.
-func (s *Session) TriggerCompare(dir *pairtree.Node, level diffmodel.CompareLevel, recursive bool) {
-	if dir == nil || !dir.IsDir() {
+// TriggerCompare starts a comparison at level for target (SPEC.md §5.2).
+// A file or symlink target is compared on its own, and recursive means
+// nothing for it. A directory target compares its direct file/symlink
+// children, or — when recursive — its entire subtree: already-known
+// descendants are enqueued immediately, and any not yet discovered by
+// the background listing scan are picked up as they're found (via
+// OnListResult). Either way, target is at or under the current
+// navigation focus, so these jobs already sort ahead of unrelated
+// background work (SPEC.md §8.3) without needing a priority of their own.
+func (s *Session) TriggerCompare(target *pairtree.Node, level diffmodel.CompareLevel, recursive bool) {
+	if target == nil {
 		return
 	}
+	if !target.IsDir() {
+		s.examine(target, level)
+		return
+	}
+	dir := target
 	if recursive {
 		// Arm dir itself, not just its current children: if dir hasn't
 		// finished listing yet, dir.Children is still empty right now, so

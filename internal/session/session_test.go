@@ -204,6 +204,39 @@ func TestNonRecursiveTriggerOnlyAffectsDirectChildren(t *testing.T) {
 	}
 }
 
+// SPEC.md §5.2's single-row trigger: 'c' on a file compares that file
+// and nothing else, not its 10,000 siblings.
+func TestTriggerOnASingleFileComparesOnlyThatFile(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	for _, name := range []string{"wanted.txt", "sibling.txt"} {
+		mustWrite(t, filepath.Join(left, name), "hello")
+		mustWrite(t, filepath.Join(right, name), "world")
+	}
+
+	s := New(left, right, 2, 2, diffmodel.NotCompared)
+	defer s.Close()
+
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+
+	wanted, ok := s.Node("wanted.txt")
+	if !ok {
+		t.Fatal("wanted.txt not found")
+	}
+	s.TriggerCompare(wanted, diffmodel.Checksum, true) // recursive means nothing for a file
+
+	pump(t, s, 5*time.Second, func() bool { return wanted.Level == diffmodel.Checksum })
+	drainPending(t, s)
+
+	if wanted.Result != diffmodel.Differs {
+		t.Fatalf("wanted.txt Result = %v; want Differs", wanted.Result)
+	}
+	sibling, _ := s.Node("sibling.txt")
+	if sibling.Level != diffmodel.NotCompared || sibling.Left.HaveStat {
+		t.Fatalf("sibling.txt was examined too (Level=%v HaveStat=%v); want it untouched",
+			sibling.Level, sibling.Left.HaveStat)
+	}
+}
+
 func TestCancelPendingComparesDropsQueuedNotActive(t *testing.T) {
 	left, right := t.TempDir(), t.TempDir()
 	for i := 0; i < 5; i++ {

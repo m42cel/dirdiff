@@ -597,7 +597,7 @@ func (m Model) renderStatusBar() string {
 	}
 	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s | scan workers: %d | compare workers: %d]",
 		compareLevelLabel(m.compareLevel), recursiveLabel, filterSetLabel(m.filter), m.sess.ListWorkers(), m.sess.CompareWorkers())
-	hint := "↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare · n/N diff · x cancel · ? help · q quit"
+	hint := "↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare row · C compare dir · n/N diff · x cancel · ? help · q quit"
 
 	return statusBarStyle.Render(stats) + "\n" + pendingStyle.Render(settings) + "\n" + dimStyle.Render(hint)
 }
@@ -615,7 +615,8 @@ func helpView() string {
 		"r              toggle recursive on/off (remembered, default on)",
 		"f              open row-status filter popup: multi-select Left-only / Right-only / Equal / Different — space toggles, enter confirms (remembered)",
 		"w              open worker-count popup: scan / compare pool size, Enter to type a new value",
-		"c              compare current directory's entries at the current level/recursive setting",
+		"c              compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or whole subtree, with r)",
+		"C              compare the current directory the same way, whatever the cursor is on and whatever the filter hides",
 		"n / N          jump to next / previous difference",
 		"x              cancel all pending (not yet started) comparisons",
 		"?              toggle this help",

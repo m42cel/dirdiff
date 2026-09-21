@@ -374,13 +374,17 @@ both sides.
   default metadata) and the **recursive** toggle (default on). `l`
   switches the compare level; `r` toggles recursive on/off. Neither key
   enqueues any work by itself.
-- `c` runs a comparison at the current level/recursive setting, for the
-  **currently displayed directory's visible entries**. If recursive is on,
-  this queues the same level for the entire subtree rooted at the current
-  directory instead of just its direct children, feeding the background
-  priority queue.
-- Triggering a level on a single selected file row (not a directory)
-  compares just that file.
+- `c` runs a comparison at the current level/recursive setting on the
+  **row under the cursor**. A file or symlink row is compared on its own
+  — recursive means nothing for it. A directory row compares its direct
+  entries, or, with recursive on, the entire subtree rooted at it,
+  feeding the background priority queue. Above the roots (§4.3.1) the
+  selected row is the root pair, so `c` there compares the roots.
+- `C` runs the same thing on the **current working directory** — the one
+  being stood in — whatever the cursor happens to be on. It applies to
+  every entry of that directory, including any the active filter is
+  hiding: the filter is a view concern, and a recursive trigger reaches
+  hidden descendants anyway.
 
 ### 5.3 Level monotonicity
 
@@ -547,7 +551,8 @@ plus the full reference via `?` (§4.5).
 | `r` | Toggle the persistent recursive setting on/off (remembered; default on) |
 | `f` | Open the row-status filter popup: multi-select Left-only / Right-only / Equal / Different (§4.7; remembered like `l`/`r`) |
 | `w` | Open the worker-count popup: resize the scan/compare pools live (§4.8) |
-| `c` | Compare current directory's visible entries at the current level/recursive setting |
+| `c` | Compare the selected row at the current level/recursive setting |
+| `C` | Compare the current directory at the current level/recursive setting |
 | `n` / `N` | Jump to next / previous entry in the current directory whose status isn't "same" (only considers entries already compared at some level) |
 | `X` / `Esc` | Cancel/clear all pending (not-yet-started) queued comparison jobs |
 | `?` | Toggle full keybinding help overlay |

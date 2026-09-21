@@ -341,6 +341,8 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.workersInput = ""
 	case "c":
 		m.triggerCompare()
+	case "C":
+		m.triggerCompareDir()
 	case "n":
 		m.jumpDiff(true)
 	case "N":
@@ -415,12 +417,28 @@ func (m *Model) applyWorkersInput() {
 	}
 }
 
-// triggerCompare runs the persistent compareLevel setting on the current
-// directory's children (SPEC.md §5.2), recursively if the persistent
-// recursive toggle is on. Neither setting is consumed by the trigger, so
-// 'c' can be pressed repeatedly (e.g. while navigating) without
-// re-selecting them each time.
+// triggerCompare runs the persistent compareLevel setting on the row
+// under the cursor ('c', SPEC.md §5.2): a file compares just itself, a
+// directory compares its children — or its whole subtree if the
+// persistent recursive toggle is on. Above the root (SPEC.md §4.3.1) the
+// selected row is the root pair itself, so 'c' there compares the roots,
+// which is what that level is for.
+//
+// Neither setting is consumed by the trigger, so 'c' can be pressed
+// repeatedly (e.g. while navigating) without re-selecting them each time.
 func (m *Model) triggerCompare() {
+	visible := m.visibleChildren()
+	if m.cursorIdx >= len(visible) {
+		return
+	}
+	m.sess.TriggerCompare(visible[m.cursorIdx], m.compareLevel, m.recursive)
+}
+
+// triggerCompareDir runs the same settings on the whole directory being
+// stood in ('C'), whether or not the filter is hiding some of it: the
+// filter is a view concern, and a recursive trigger reaches hidden
+// descendants anyway.
+func (m *Model) triggerCompareDir() {
 	m.sess.TriggerCompare(m.cursorDir, m.compareLevel, m.recursive)
 }
 

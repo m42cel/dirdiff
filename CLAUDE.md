@@ -155,6 +155,10 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   rely on color alone for a new status. The compare level (`l`) and
   recursive toggle (`r`) are persistent settings, not one-shot flags —
   `c` runs whatever is currently selected and doesn't reset either one.
+  `c` targets the **selected row** (a file on its own, a directory's
+  entries or subtree) and `C` the **current directory**; both go through
+  the one `session.TriggerCompare`, so the difference between them is
+  only which node the UI hands over.
   `View()` runs once per Bubble Tea message — every scan/compare result
   and every spinner tick — so anything it does per row is on a very hot
   path: keep it O(visible rows), never O(subtree). That's why the row

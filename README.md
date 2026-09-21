@@ -81,7 +81,8 @@ dirdiff [flags] <left-dir> <right-dir>
 | `r` | Toggle recursive mode on/off — remembered, default on |
 | `f` | Open the row-status filter popup — multi-select Left-only / Right-only / Equal / Different, space to toggle, enter to confirm — remembered like `l`/`r` |
 | `w` | Open the worker-count popup — resize the scan/compare pools live |
-| `c` | Compare the current directory's files at the current level/recursive setting |
+| `c` | Compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or its whole subtree, with `r` on) |
+| `C` | Compare the current directory the same way, whatever the cursor is on and whatever the filter hides |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
 | `x` | Cancel all pending (not yet started) comparisons |
 | `?` | Toggle the help overlay |

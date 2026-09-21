@@ -107,16 +107,17 @@ Sizes are shown in base-2 units (KiB, MiB, GiB, …), and a single file's
 size also names its exact byte count — the metadata level calls two files
 different on an exact size mismatch, which rounded units can hide.
 
-Size is never measured for its own sake: it's only ever the size a
-comparison had to read anyway, so `dirdiff` issues no extra `stat()` call
-just to total a directory. That means a file not yet compared — or one
-that exists on a single side, so there's nothing to compare it with —
-adds nothing to the total, and symlinks never do (comparing one reads its
-link target, not a file, which is why they're counted apart from files).
-While anything under a directory is still unsized the total reads as a
-lower bound with the sized count next to it (`≥1.4 MiB (12/40 files
+Size is never measured for its own sake: `dirdiff` issues no `stat()`
+call a comparison level didn't ask for. What it does measure, it measures
+per side — including entries that exist on one side only, which have
+nothing to be compared against but are still worth knowing the size of —
+so a total converges to the exact figure once the level you asked for has
+swept the subtree. Symlinks never contribute a size (comparing one reads
+its link target, not a file, which is why they're counted apart from
+files). While anything under a directory is still unsized the total reads
+as a lower bound with the sized count next to it (`≥1.4 MiB (12/40 files
 sized)`); when nothing under it is sized — as stays the case under
-`--level=none`, where nothing is ever compared — the size shows as `?`.
+`--level=none`, where nothing is ever measured — the size shows as `?`.
 
 Pressing `←` at the root goes up one more level, where the only row is
 the pair of compared directories themselves — select it to read the

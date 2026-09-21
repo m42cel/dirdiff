@@ -5,8 +5,6 @@
 // both build on it without coupling to each other.
 package diffmodel
 
-import "time"
-
 // EntryType distinguishes what kind of filesystem object a row represents.
 // Files, directories, and symlinks are matched independently (see
 // SPEC.md §3.1) so a name colliding across types on the two sides never
@@ -75,7 +73,7 @@ const (
 // two sides compared. It's derived from a row's type/presence/result
 // rather than stored, so there is exactly one definition of what "equal"
 // or "different" means for a row, shared by the UI's filter and by the
-// per-subtree tallies package tree keeps.
+// per-subtree tallies package pairtree keeps.
 type RowStatus int
 
 const (
@@ -142,11 +140,4 @@ func EntryLess(aName string, aType EntryType, bName string, bType EntryType) boo
 		return aType == Dir
 	}
 	return aName < bName
-}
-
-// StatInfo holds size/mtime metadata for both sides of a compared entry,
-// populated once a SizeMtime (or deeper) comparison has run.
-type StatInfo struct {
-	LeftSize, RightSize   int64
-	LeftMtime, RightMtime time.Time
 }

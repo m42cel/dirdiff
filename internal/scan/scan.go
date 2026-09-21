@@ -73,8 +73,8 @@ func readDirTyped(dir string) ([]diffmodel.ListedEntry, error) {
 	return out, nil
 }
 
-// CompareJob asks for entry RelPath (present on both sides) to be
-// compared at Level.
+// CompareJob asks for file RelPath (present on both sides) to be
+// compared at Level, within one pairing.
 type CompareJob struct {
 	RelPath           string
 	LeftAbs, RightAbs string
@@ -88,18 +88,14 @@ type CompareOutcome struct {
 	Level   diffmodel.CompareLevel
 	Result  diffmodel.CompareResult
 	Err     error
-	Stat    *diffmodel.StatInfo // non-nil when size/mtime were read
 }
 
-// DoCompare runs job and returns its outcome. Symlinks are never
-// followed — any level compares the two link targets as strings
-// (SPEC.md §7), which is cheap enough to always do in full regardless of
-// the requested level.
+// DoCompare reads both sides of a file and reports whether they're
+// byte-for-byte identical. Only the content level ever reaches here: a
+// metadata verdict is an equality test over two StatResults, which
+// needs no job at all, and a symlink is compared by its target string
+// the same way (SPEC.md §7) — neither ever opens a file.
 func DoCompare(job CompareJob) CompareOutcome {
-	if job.Type == diffmodel.Symlink {
-		return compareSymlink(job)
-	}
-
 	leftInfo, err := os.Lstat(job.LeftAbs)
 	if err != nil {
 		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: diffmodel.CompareError, Err: err}
@@ -109,51 +105,65 @@ func DoCompare(job CompareJob) CompareOutcome {
 		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: diffmodel.CompareError, Err: err}
 	}
 
-	stat := &diffmodel.StatInfo{
-		LeftSize: leftInfo.Size(), RightSize: rightInfo.Size(),
-		LeftMtime: leftInfo.ModTime(), RightMtime: rightInfo.ModTime(),
+	// Two files of different lengths cannot have equal content, so this
+	// answers without reading a byte. Whoever enqueued the job normally
+	// already knows both sizes and skips it entirely (SPEC.md §5.1);
+	// this catches the cases they can't — a file that changed since it
+	// was statted, or one whose stat failed.
+	if leftInfo.Size() != rightInfo.Size() {
+		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: diffmodel.Differs}
 	}
 
-	switch job.Level {
-	case diffmodel.SizeMtime:
-		result := diffmodel.Differs
-		if leftInfo.Size() == rightInfo.Size() && sameMtime(leftInfo.ModTime(), rightInfo.ModTime()) {
-			result = diffmodel.Same
-		}
-		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: result, Stat: stat}
-
-	case diffmodel.Checksum:
-		equal, err := filesEqual(job.LeftAbs, job.RightAbs)
-		if err != nil {
-			return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: diffmodel.CompareError, Err: err, Stat: stat}
-		}
-		result := diffmodel.Differs
-		if equal {
-			result = diffmodel.Same
-		}
-		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: result, Stat: stat}
-
-	default:
-		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: diffmodel.Unknown, Stat: stat}
-	}
-}
-
-func sameMtime(a, b time.Time) bool { return a.Equal(b) }
-
-func compareSymlink(job CompareJob) CompareOutcome {
-	left, err := os.Readlink(job.LeftAbs)
+	equal, err := filesEqual(job.LeftAbs, job.RightAbs)
 	if err != nil {
-		return CompareOutcome{RelPath: job.RelPath, Level: diffmodel.Checksum, Result: diffmodel.CompareError, Err: err}
-	}
-	right, err := os.Readlink(job.RightAbs)
-	if err != nil {
-		return CompareOutcome{RelPath: job.RelPath, Level: diffmodel.Checksum, Result: diffmodel.CompareError, Err: err}
+		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: diffmodel.CompareError, Err: err}
 	}
 	result := diffmodel.Differs
-	if left == right {
+	if equal {
 		result = diffmodel.Same
 	}
-	return CompareOutcome{RelPath: job.RelPath, Level: diffmodel.Checksum, Result: result}
+	return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: result}
+}
+
+// StatJob asks for one entry's metadata on one side. Directories are
+// never statted: a directory contributes a count to the totals, not a
+// size, and its own mtime is not compared.
+type StatJob struct {
+	Side    diffmodel.Side
+	RelPath string
+	Abs     string
+	Type    diffmodel.EntryType
+}
+
+// StatResult is the outcome of a StatJob. Unlike a listing, a missing
+// entry is an error here: the entry was seen by a listing of its parent,
+// so it existing is not in question.
+type StatResult struct {
+	Side       diffmodel.Side
+	RelPath    string
+	Size       int64
+	Mtime      time.Time
+	LinkTarget string // symlinks only (SPEC.md §7)
+	Err        error
+}
+
+// DoStat lstats one entry — and, for a symlink, reads its target too,
+// which is the whole of what a symlink can be compared by since the
+// link is never followed (SPEC.md §7).
+func DoStat(job StatJob) StatResult {
+	out := StatResult{Side: job.Side, RelPath: job.RelPath}
+	info, err := os.Lstat(job.Abs)
+	if err != nil {
+		out.Err = err
+		return out
+	}
+	out.Size, out.Mtime = info.Size(), info.ModTime()
+	if job.Type == diffmodel.Symlink {
+		if out.LinkTarget, err = os.Readlink(job.Abs); err != nil {
+			out.Err = err
+		}
+	}
+	return out
 }
 
 // filesEqual does a streaming, chunked byte-for-byte comparison, short

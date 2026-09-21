@@ -97,47 +97,82 @@ func TestDoListMissingDirectoryIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestDoCompareSizeMtimeDetectsSizeDifference(t *testing.T) {
+// A size mismatch is a conclusive content verdict, so DoCompare answers
+// it without opening either file. Whoever enqueues the job normally
+// knows both sizes already and never creates it (SPEC.md §5.1); this is
+// the fallback for a file that changed since it was statted.
+func TestDoCompareSizeMismatchNeedsNoRead(t *testing.T) {
 	left := t.TempDir()
 	right := t.TempDir()
 	mustWrite(t, filepath.Join(left, "f"), "hello")
 	mustWrite(t, filepath.Join(right, "f"), "hello!!!")
+	// Unreadable on both sides: opening either one would fail outright,
+	// so a CompareError here would prove the precheck didn't happen.
+	for _, dir := range []string{left, right} {
+		if err := os.Chmod(filepath.Join(dir, "f"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	out := DoCompare(CompareJob{
 		LeftAbs: filepath.Join(left, "f"), RightAbs: filepath.Join(right, "f"),
-		Type: diffmodel.File, Level: diffmodel.SizeMtime,
+		Type: diffmodel.File, Level: diffmodel.Checksum,
 	})
 	if out.Result != diffmodel.Differs {
-		t.Fatalf("Result = %v; want Differs (sizes differ)", out.Result)
-	}
-	if out.Stat == nil || out.Stat.LeftSize != 5 || out.Stat.RightSize != 8 {
-		t.Fatalf("Stat = %+v; want LeftSize=5 RightSize=8", out.Stat)
+		t.Fatalf("Result = %v (err %v); want Differs decided from the sizes alone", out.Result, out.Err)
 	}
 }
 
-func TestDoCompareSizeMtimeDetectsMtimeOnlyDifference(t *testing.T) {
-	left := t.TempDir()
-	right := t.TempDir()
-	mustWrite(t, filepath.Join(left, "f"), "hello")
-	mustWrite(t, filepath.Join(right, "f"), "hello")
-
-	now := time.Now()
-	if err := os.Chtimes(filepath.Join(left, "f"), now, now); err != nil {
-		t.Fatal(err)
-	}
-	later := now.Add(time.Hour)
-	if err := os.Chtimes(filepath.Join(right, "f"), later, later); err != nil {
+func TestDoStatReadsSizeAndMtime(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "f"), "hello")
+	when := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(filepath.Join(dir, "f"), when, when); err != nil {
 		t.Fatal(err)
 	}
 
-	// Sizes are equal but mtimes differ — the merged size+mtime level must
-	// catch this even though a size-only check wouldn't.
-	out := DoCompare(CompareJob{
-		LeftAbs: filepath.Join(left, "f"), RightAbs: filepath.Join(right, "f"),
-		Type: diffmodel.File, Level: diffmodel.SizeMtime,
-	})
-	if out.Result != diffmodel.Differs {
-		t.Fatalf("Result = %v; want Differs (mtimes differ)", out.Result)
+	out := DoStat(StatJob{Side: diffmodel.Right, RelPath: "f", Abs: filepath.Join(dir, "f"), Type: diffmodel.File})
+	if out.Err != nil {
+		t.Fatalf("Err = %v; want nil", out.Err)
+	}
+	if out.Side != diffmodel.Right || out.RelPath != "f" {
+		t.Errorf("result = %v %q; want Right f — a result has to say what it's about", out.Side, out.RelPath)
+	}
+	if out.Size != 5 {
+		t.Errorf("Size = %d; want 5", out.Size)
+	}
+	if !out.Mtime.Equal(when) {
+		t.Errorf("Mtime = %v; want %v", out.Mtime, when)
+	}
+	if out.LinkTarget != "" {
+		t.Errorf("LinkTarget = %q; want empty for a regular file", out.LinkTarget)
+	}
+}
+
+// A symlink is compared by its target string alone (SPEC.md §7), so the
+// stat that measures it reads that target too — and never follows it,
+// which is why a link to nowhere still stats fine.
+func TestDoStatReadsSymlinkTargetWithoutFollowing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Symlink("/nowhere/at/all", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	out := DoStat(StatJob{RelPath: "link", Abs: filepath.Join(dir, "link"), Type: diffmodel.Symlink})
+	if out.Err != nil {
+		t.Fatalf("Err = %v; want nil — a dangling link is still a link", out.Err)
+	}
+	if out.LinkTarget != "/nowhere/at/all" {
+		t.Errorf("LinkTarget = %q; want the target string", out.LinkTarget)
+	}
+}
+
+func TestDoStatMissingEntryIsAnError(t *testing.T) {
+	// Unlike a listing, where a missing directory is the normal one-sided
+	// case: this entry was seen by a listing of its parent.
+	out := DoStat(StatJob{Abs: filepath.Join(t.TempDir(), "gone"), Type: diffmodel.File})
+	if out.Err == nil {
+		t.Fatal("Err = nil; want the lstat failure")
 	}
 }
 
@@ -193,39 +228,6 @@ func TestDoCompareChecksumAcrossChunkBoundary(t *testing.T) {
 	})
 	if out.Result != diffmodel.Differs {
 		t.Fatalf("Result = %v; want Differs", out.Result)
-	}
-}
-
-func TestDoCompareSymlinkComparesTargetString(t *testing.T) {
-	left := t.TempDir()
-	right := t.TempDir()
-
-	if err := os.Symlink("/target/a", filepath.Join(left, "link")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/target/a", filepath.Join(right, "link")); err != nil {
-		t.Fatal(err)
-	}
-	out := DoCompare(CompareJob{
-		LeftAbs: filepath.Join(left, "link"), RightAbs: filepath.Join(right, "link"),
-		Type: diffmodel.Symlink, Level: diffmodel.SizeMtime, // level should be irrelevant for symlinks
-	})
-	if out.Result != diffmodel.Same {
-		t.Fatalf("Result = %v; want Same (identical targets)", out.Result)
-	}
-
-	if err := os.Symlink("/target/b", filepath.Join(right, "link2")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/target/other", filepath.Join(left, "link2")); err != nil {
-		t.Fatal(err)
-	}
-	out2 := DoCompare(CompareJob{
-		LeftAbs: filepath.Join(left, "link2"), RightAbs: filepath.Join(right, "link2"),
-		Type: diffmodel.Symlink, Level: diffmodel.Checksum,
-	})
-	if out2.Result != diffmodel.Differs {
-		t.Fatalf("Result = %v; want Differs (different targets)", out2.Result)
 	}
 }
 

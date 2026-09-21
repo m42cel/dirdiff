@@ -73,7 +73,7 @@ func TestStatAddsSizeToEveryAncestor(t *testing.T) {
 	tr.ApplyListing(sub, entries("f.txt"), nil)
 	f := tr.Index["sub/f.txt"]
 
-	ApplyStat(f, 100, time.Unix(1, 0))
+	ApplyStat(f, Stat{Size: 100, Mtime: time.Unix(1, 0)})
 	for _, n := range []*Node{sub, tr.Root} {
 		got := n.Totals()
 		if got.Size != 100 || got.SizedFiles != 1 {
@@ -82,7 +82,7 @@ func TestStatAddsSizeToEveryAncestor(t *testing.T) {
 	}
 
 	// Re-statting the same file replaces its size instead of adding to it.
-	ApplyStat(f, 300, time.Unix(2, 0))
+	ApplyStat(f, Stat{Size: 300, Mtime: time.Unix(2, 0)})
 	if got := tr.Root.Totals(); got.Size != 300 || got.SizedFiles != 1 {
 		t.Errorf("totals after re-statting = %d bytes over %d files; want 300 over 1", got.Size, got.SizedFiles)
 	}
@@ -96,7 +96,7 @@ func TestSymlinkNeverContributesASize(t *testing.T) {
 	// A symlink's stat reports the size of the link itself, not of what it
 	// names (SPEC.md §7) — counting it would make the details panel's
 	// sized/total ratio stop meaning anything.
-	ApplyStat(tr.Index["link"], 11, time.Unix(1, 0))
+	ApplyStat(tr.Index["link"], Stat{Size: 11, Mtime: time.Unix(1, 0)})
 
 	if got := tr.Root.Totals(); got.Size != 0 || got.SizedFiles != 0 {
 		t.Errorf("symlink contributed size %d over %d files; want none", got.Size, got.SizedFiles)
@@ -104,12 +104,38 @@ func TestSymlinkNeverContributesASize(t *testing.T) {
 	assertTotals(t, tr.Root)
 }
 
+func TestFailedStatIsRecordedButContributesNoSize(t *testing.T) {
+	tr := NewTree(diffmodel.Left)
+	tr.ApplyListing(tr.Root, entries("f.txt", "g.txt"), nil)
+	ApplyStat(tr.Index["f.txt"], Stat{Err: errUnreadable})
+	ApplyStat(tr.Index["g.txt"], Stat{Size: 64, Mtime: time.Unix(1, 0)})
+
+	f := tr.Index["f.txt"]
+	if !f.HaveStat || f.StatErr == nil {
+		t.Fatalf("HaveStat=%v StatErr=%v; want the failure recorded, not silently dropped", f.HaveStat, f.StatErr)
+	}
+	got := tr.Root.Totals()
+	if got.Size != 64 || got.SizedFiles != 1 {
+		t.Errorf("totals = %d bytes over %d files; want only the file that could be read", got.Size, got.SizedFiles)
+	}
+	if got.Files != 2 {
+		t.Errorf("file count = %d; want 2 — a file that can't be statted is still an entry", got.Files)
+	}
+	assertTotals(t, tr.Root)
+}
+
+var errUnreadable = &statErr{}
+
+type statErr struct{}
+
+func (*statErr) Error() string { return "permission denied" }
+
 func TestRelistingReplacesTotalsInsteadOfAddingToThem(t *testing.T) {
 	tr := NewTree(diffmodel.Left)
 	tr.ApplyListing(tr.Root, entries("sub/"), nil)
 	sub := tr.Index["sub"]
 	tr.ApplyListing(sub, entries("gone.txt", "f.txt"), nil)
-	ApplyStat(tr.Index["sub/gone.txt"], 500, time.Unix(1, 0))
+	ApplyStat(tr.Index["sub/gone.txt"], Stat{Size: 500, Mtime: time.Unix(1, 0)})
 
 	tr.ApplyListing(sub, entries("f.txt"), nil)
 
@@ -142,7 +168,7 @@ func TestTotalsSurviveRandomMutationSequence(t *testing.T) {
 	for step := 0; step < 400 && (len(unlisted) > 0 || len(statable) > 0); step++ {
 		if len(unlisted) == 0 || (len(statable) > 0 && rng.Intn(2) == 0) {
 			n := statable[rng.Intn(len(statable))]
-			ApplyStat(n, rng.Int63n(1<<20), time.Unix(int64(step), 0))
+			ApplyStat(n, Stat{Size: rng.Int63n(1 << 20), Mtime: time.Unix(int64(step), 0)})
 			assertTotals(t, tr.Root)
 			continue
 		}

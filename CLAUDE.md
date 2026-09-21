@@ -64,17 +64,21 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   `Upsert` merges a job already queued under the
   same key instead of duplicating it; `Pop`/`Done` track in-flight jobs
   so `IsPending` reports queued-or-running for the UI's pending glyph.
-- **`internal/scan`** — pure filesystem I/O (`DoList`, `DoCompare`).
-  Every function takes absolute paths and returns a result; nothing here
-  touches shared state, so it's safe to call concurrently from workers.
-  `DoList` reads **one** side's directory — matching the two sides
-  happens a layer up, so a directory paired with one at an entirely
-  different path needs no listing of its own. Symlinks are never followed
-  — any compare level just compares the two `readlink` targets as strings
-  (spec §7).
+- **`internal/scan`** — pure filesystem I/O (`DoList`, `DoStat`,
+  `DoCompare`). Every function takes absolute paths and returns a result;
+  nothing here touches shared state, so it's safe to call concurrently
+  from workers. `DoList` and `DoStat` read **one** side — matching the
+  two sides happens a layer up, so a directory paired with one at an
+  entirely different path needs no listing of its own, and a metadata
+  verdict is an in-memory equality test over two `DoStat` results rather
+  than a job. `DoCompare` therefore only ever runs the content level, and
+  opens nothing when the two sizes already differ. Symlinks are never
+  followed: `DoStat` reads the `readlink` target and the two targets are
+  compared as strings (spec §7), so a symlink never reaches `DoCompare`.
 - **`internal/sidetree`** — one plain `Node` tree per side, one node per
-  real filesystem entry: names and types from listing, size/mtime from
-  metadata results, and nothing about the other side. A side node is
+  real filesystem entry: names and types from listing, size/mtime/link
+  target from stat results, and nothing about the other side. A side node
+  is
   shared by every pairing that covers it, which is what makes listing
   never repeat per pairing. Its per-subtree `Totals` (counts + size, spec
   §4.2) are kept incrementally via one upward walk per mutation, never a
@@ -89,15 +93,18 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   directories matched entry by entry) and the rollup logic (spec §3.3).
   A node holds `Left`/`Right *sidetree.Node` rather than a name or
   metadata of its own; `Presence`/`Name`/`Listed`/`SideTotals` are
-  derived from those. `Merge` and `ApplyCompareResult` are the only
-  mutators: `Merge` extends a directory's children from the union of its
+  derived from those. `Merge`, `ApplyMetadata` and `ApplyCompareResult`
+  are the only mutators: `Merge` extends a directory's children from the
+  union of its
   two sides by `(name, type)` — **gated on every side it has being
   listed**, so a row's `Presence` is fixed at creation and never mutates
-  — and `ApplyCompareResult` is a no-op if the incoming level isn't
-  deeper than what's already known (spec §5.3 monotonicity). Metadata is
-  deliberately *not* stored here: a size is a fact about one side's file,
-  so it lives in `sidetree` and is shared with every other pairing over
-  the same files. **Nodes are mutated exclusively from the UI's Update
+  — `ApplyMetadata` records the metadata verdict once both sides of a row
+  have been statted (in memory, no job — it's an equality test, and gives
+  the same answer in every pairing), and `ApplyCompareResult` is a no-op
+  if the incoming level isn't deeper than what's already known (spec §5.3
+  monotonicity). Metadata itself is deliberately *not* stored here: a
+  size is a fact about one side's file, so it lives in `sidetree` and is
+  shared with every other pairing over the same files. **Nodes are mutated exclusively from the UI's Update
   loop** (a single goroutine) — nothing in this package takes a lock.
   Each node carries `descMatches`, a per-`RowStatus` tally of its
   descendants that answers the filter's "is there a matching row below?"
@@ -117,8 +124,20 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   `Merge` turns whatever now has a counterpart into rows. `merge`
   descends into a new directory row whose two sides are *already* listed
   — a row created after its subtree was scanned has no listing result
-  left to arrive. Listing keys are namespaced `L/…`/`R/…`; compare keys
-  are pairing-relative paths. Framework-agnostic on purpose: it exposes plain channels
+  left to arrive. `OnStatResult` is the same two-step router for
+  metadata, and is where the content level's size precheck lands:
+  `examine` only ever creates a content job once both sides are statted
+  *and* their sizes match — a mismatch is already a conclusive content
+  verdict, recorded in memory — so on a divergent tree most content jobs
+  are never created at all. A row whose metadata isn't in yet records
+  what it was asked for in `ArmedLevel` and is re-examined when its stats
+  land, the same way `PendingRecursiveLevel` is re-checked on a listing.
+  The two pools divide **ambient discovery** (listing) from **triggered
+  examination** (stat + content), so `x` cancels stat work too; the
+  examination queue therefore holds keys from two namespaces at once
+  (`L/…`/`R/…` for stats, `p/…` for this pairing's content jobs) and
+  `CancelPendingCompares` routes each dropped key by its prefix.
+  Framework-agnostic on purpose: it exposes plain channels
   (`ListResults()`/`CompareResults()`), not `tea.Cmd`. A recursive
   compare trigger arms *both* the target directory and its children
   (`PendingRecursiveLevel`) so the intent survives even if the directory

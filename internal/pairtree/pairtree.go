@@ -51,6 +51,16 @@ type Node struct {
 	// every descendant as it's found.
 	PendingRecursiveLevel diffmodel.CompareLevel
 
+	// ArmedLevel is a comparison asked for on this row that couldn't be
+	// acted on yet because the row's metadata wasn't known. A content
+	// comparison waits for both sides' sizes, since two files of
+	// different lengths differ without a byte being read (SPEC.md §5.1)
+	// — so the job is only ever created once the sizes are known to
+	// match. Package session re-checks this whenever a stat result
+	// lands, the same way PendingRecursiveLevel is re-checked whenever a
+	// listing does.
+	ArmedLevel diffmodel.CompareLevel
+
 	// PendingCompare counts comparison jobs queued or in flight anywhere
 	// in this node's subtree, including itself. Comparison only ever runs
 	// against both-sided entries, so unlike listing — which each side
@@ -151,6 +161,33 @@ func (n *Node) PendingListing() (left, right int) {
 	}
 	if n.Right != nil {
 		right = n.Right.PendingListing
+	}
+	return left, right
+}
+
+// ExaminePending reports whether any triggered examination is still
+// outstanding for n or anywhere beneath it (SPEC.md §8.2): a content
+// comparison in this pairing, or a metadata stat on either side. Both
+// count, because both are work the user asked for and both can still
+// change what this row says — so the row shows as pending until neither
+// is left. Stat work is read off the side nodes rather than tallied
+// here, since it's shared with every other pairing over the same files.
+func (n *Node) ExaminePending() bool {
+	if n.PendingCompare > 0 {
+		return true
+	}
+	left, right := n.PendingStat()
+	return left > 0 || right > 0
+}
+
+// PendingStat reports the metadata work still outstanding in each side's
+// subtree, the per-side counterpart to PendingCompare.
+func (n *Node) PendingStat() (left, right int) {
+	if n.Left != nil {
+		left = n.Left.PendingStat
+	}
+	if n.Right != nil {
+		right = n.Right.PendingStat
 	}
 	return left, right
 }
@@ -346,7 +383,56 @@ func Merge(n *Node) (added []*Node) {
 		adjustTalliesUpward(n, delta)
 	}
 	recomputeResultUpward(n)
+	// Only once the rows are linked and counted: a row whose two sides
+	// were statted before it existed — anything a second pairing covers
+	// — already has its metadata verdict, for free.
+	for _, c := range added {
+		ApplyMetadata(c)
+	}
 	return added
+}
+
+// ApplyMetadata records the metadata-level verdict for n if both its
+// sides have been statted, and does nothing otherwise. No job and no
+// I/O: once each side's size and mtime are known, comparing them is an
+// equality test, and it gives the same answer in every pairing over the
+// same two files. A symlink is settled here for good rather than at a
+// level — its target string is the whole of what can be compared
+// (SPEC.md §7) — so it's recorded at the deepest level, which is also
+// what keeps a later content trigger from queueing a job to open it.
+func ApplyMetadata(n *Node) {
+	if n.IsDir() || n.Presence() != diffmodel.Both {
+		return
+	}
+	if !n.Left.HaveStat || !n.Right.HaveStat {
+		return
+	}
+	if err := firstErr(n.Left.StatErr, n.Right.StatErr); err != nil {
+		ApplyCompareResult(n, diffmodel.SizeMtime, diffmodel.CompareError, err)
+		return
+	}
+	if n.Type == diffmodel.Symlink {
+		ApplyCompareResult(n, diffmodel.Checksum, sameIf(n.Left.LinkTarget == n.Right.LinkTarget), nil)
+		return
+	}
+	same := n.Left.Size == n.Right.Size && n.Left.Mtime.Equal(n.Right.Mtime)
+	ApplyCompareResult(n, diffmodel.SizeMtime, sameIf(same), nil)
+}
+
+func sameIf(same bool) diffmodel.CompareResult {
+	if same {
+		return diffmodel.Same
+	}
+	return diffmodel.Differs
+}
+
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func sortChildren(children []*Node) {

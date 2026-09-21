@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
 	"github.com/m42cel/dirdiff/internal/scan"
@@ -52,6 +53,15 @@ func listBoth(sess *session.Session, relPath string, spec ...string) {
 // only one of the two trees.
 func listSide(sess *session.Session, sd diffmodel.Side, relPath string, spec ...string) {
 	sess.OnListResult(scan.ListResult{Side: sd, RelPath: relPath, Entries: entries(spec...)})
+}
+
+// statBoth feeds each side's metadata for one row, which is what a
+// metadata verdict and a directory's size totals are made of.
+func statBoth(sess *session.Session, relPath string, leftSize, rightSize int64) {
+	sizes := [2]int64{diffmodel.Left: leftSize, diffmodel.Right: rightSize}
+	for _, sd := range diffmodel.Sides {
+		sess.OnStatResult(scan.StatResult{Side: sd, RelPath: relPath, Size: sizes[sd], Mtime: time.Unix(1, 0)})
+	}
 }
 
 func press(t *testing.T, m Model, key string) Model {
@@ -145,19 +155,13 @@ func TestDetailsPanelShowsDirectoryTotals(t *testing.T) {
 		t.Errorf("unstatted directory details = %q; want the file count with no size yet", details)
 	}
 
-	sess.OnCompareResult(scan.CompareOutcome{
-		RelPath: "sub/a.txt", Level: diffmodel.SizeMtime, Result: diffmodel.Same,
-		Stat: &diffmodel.StatInfo{LeftSize: 1024, RightSize: 1024},
-	})
+	statBoth(sess, "sub/a.txt", 1024, 1024)
 	details = m.renderDetails()
 	if !strings.Contains(details, "≥1.0 KiB (1/2 files sized)") {
 		t.Errorf("partly statted directory details = %q; want a lower-bound size", details)
 	}
 
-	sess.OnCompareResult(scan.CompareOutcome{
-		RelPath: "sub/b.txt", Level: diffmodel.SizeMtime, Result: diffmodel.Differs,
-		Stat: &diffmodel.StatInfo{LeftSize: 1024, RightSize: 3072},
-	})
+	statBoth(sess, "sub/b.txt", 1024, 3072)
 	details = m.renderDetails()
 	if !strings.Contains(details, "left:  0 directories · 2 files · 2.0 KiB") {
 		t.Errorf("fully statted directory details = %q; want an exact left total", details)
@@ -200,10 +204,7 @@ func TestDetailsPanelMarksMissingSideAsNotExisting(t *testing.T) {
 func TestAscendAboveRootShowsBothRootsAsOneRow(t *testing.T) {
 	m, sess := newTestModel(t)
 	listBoth(sess, "", "a.txt")
-	sess.OnCompareResult(scan.CompareOutcome{
-		RelPath: "a.txt", Level: diffmodel.SizeMtime, Result: diffmodel.Same,
-		Stat: &diffmodel.StatInfo{LeftSize: 2048, RightSize: 2048},
-	})
+	statBoth(sess, "a.txt", 2048, 2048)
 
 	// Wide enough that the title line naming both temp-dir paths isn't
 	// truncated before the assertion below can find them.

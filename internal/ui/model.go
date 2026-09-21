@@ -109,10 +109,15 @@ func New(sess *session.Session) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitListResult(m.sess.ListResults()), waitCompareResult(m.sess.CompareResults()), tickSpinner())
+	return tea.Batch(
+		waitListResult(m.sess.ListResults()),
+		waitStatResult(m.sess.StatResults()),
+		waitCompareResult(m.sess.CompareResults()),
+		tickSpinner())
 }
 
 type listResultMsg struct{ r scan.ListResult }
+type statResultMsg struct{ r scan.StatResult }
 type compareResultMsg struct{ r scan.CompareOutcome }
 type spinnerTickMsg struct{}
 
@@ -123,6 +128,16 @@ func waitListResult(ch <-chan scan.ListResult) tea.Cmd {
 			return nil
 		}
 		return listResultMsg{r}
+	}
+}
+
+func waitStatResult(ch <-chan scan.StatResult) tea.Cmd {
+	return func() tea.Msg {
+		r, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return statResultMsg{r}
 	}
 }
 
@@ -151,6 +166,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sess.OnListResult(msg.r)
 		m.clampCursor()
 		return m, waitListResult(m.sess.ListResults())
+
+	case statResultMsg:
+		m.sess.OnStatResult(msg.r)
+		m.clampCursor()
+		return m, waitStatResult(m.sess.StatResults())
 
 	case compareResultMsg:
 		m.sess.OnCompareResult(msg.r)

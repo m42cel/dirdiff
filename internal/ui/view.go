@@ -9,7 +9,6 @@ import (
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
 	"github.com/m42cel/dirdiff/internal/pairtree"
-	"github.com/m42cel/dirdiff/internal/session"
 	"github.com/m42cel/dirdiff/internal/sidetree"
 )
 
@@ -124,7 +123,7 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 		for i := m.scrollOffset; i < end; i++ {
 			c := children[i]
 			dim := !m.filter.isAll() && !matchesFilter(c, m.filter)
-			l, g, r := renderRowTriple(c, m.sess, m.spinnerFrame, i == m.cursorIdx, dim, leftWidth, rightWidth)
+			l, g, r := renderRowTriple(c, m.spinnerFrame, i == m.cursorIdx, dim, leftWidth, rightWidth)
 			left = append(left, l)
 			gutter = append(gutter, g)
 			right = append(right, r)
@@ -153,8 +152,8 @@ func (m Model) renderPanes(height, leftWidth, rightWidth int) (left, gutter, rig
 // in favor of color alone). dim marks a row shown only because it has a
 // descendant matching the active filter, not because it matches itself
 // (SPEC.md §4.7) — faded to distinguish a path-through from a real hit.
-func renderRowTriple(n *pairtree.Node, sess *session.Session, spinnerFrame int, selected, dim bool, leftWidth, rightWidth int) (left, gutter, right string) {
-	glyph, style := statusGlyph(n, sess, spinnerFrame)
+func renderRowTriple(n *pairtree.Node, spinnerFrame int, selected, dim bool, leftWidth, rightWidth int) (left, gutter, right string) {
+	glyph, style := statusGlyph(n, spinnerFrame)
 	if dim {
 		style = style.Faint(true)
 	}
@@ -232,7 +231,7 @@ func listingSuffix(pending, spinnerFrame int) string {
 // tree reads the same here as anywhere else.
 func (m Model) renderRootParentRow(leftWidth, rightWidth int) (left, gutter, right string) {
 	root := m.cursorDir
-	glyph, style := statusGlyph(root, m.sess, m.spinnerFrame)
+	glyph, style := statusGlyph(root, m.spinnerFrame)
 
 	pendingLeft, pendingRight := root.PendingListing()
 	leftBudget, rightBudget := leftWidth, rightWidth
@@ -329,7 +328,11 @@ func animGlyph(frames []string, frame int) string {
 // distinct glyph with a distinct color (SPEC.md §6) so it reads even
 // without color. The one-sided arrow points toward the side the entry
 // exists on, not the side it's missing from.
-func statusGlyph(n *pairtree.Node, sess *session.Session, spinnerFrame int) (string, lipgloss.Style) {
+func statusGlyph(n *pairtree.Node, spinnerFrame int) (string, lipgloss.Style) {
+	// A one-sided row's arrow is already its final answer — there's
+	// nothing to compare it against — so a metadata read still pending on
+	// the side it does exist on doesn't replace it with a spinner; that
+	// read only fills in a size for the details panel.
 	switch n.Presence() {
 	case diffmodel.LeftOnly:
 		return "←", missingStyle
@@ -349,17 +352,17 @@ func statusGlyph(n *pairtree.Node, sess *session.Session, spinnerFrame int) (str
 		if n.Result == diffmodel.Differs || n.Result == diffmodel.CompareError {
 			return "≠", differsStyle
 		}
-		// Otherwise (Same or not-yet-known), a comparison still
+		// Otherwise (Same or not-yet-known), an examination still
 		// outstanding anywhere in the subtree means the rollup isn't
 		// final yet — show that instead of the rollup glyph, since the
 		// rollup only reflects completed results and would otherwise
 		// misreport a subtree as "clean so far" or "not yet known" while
 		// work is still in flight beneath it. Listing-pending is shown
-		// separately, per side, next to the name (renderRowTriple) —
-		// unlike comparison, which needs both sides, listing runs
-		// independently per side, so it doesn't belong in this shared
-		// gutter glyph.
-		if n.PendingCompare > 0 {
+		// separately, per side, next to the name (renderRowTriple):
+		// listing is ambient discovery rather than something the user
+		// asked for, so it doesn't belong in this shared gutter glyph
+		// even though it, too, runs per side.
+		if n.ExaminePending() {
 			return animGlyph(comparePendingFrames, spinnerFrame), pendingStyle
 		}
 		switch n.Result {
@@ -370,7 +373,7 @@ func statusGlyph(n *pairtree.Node, sess *session.Session, spinnerFrame int) (str
 		}
 	}
 
-	if sess.IsComparePending(n.RelPath) {
+	if n.ExaminePending() {
 		return animGlyph(comparePendingFrames, spinnerFrame), pendingStyle
 	}
 	switch n.Result {

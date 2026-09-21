@@ -26,9 +26,14 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 }
 
+// counts records how much of each kind of work actually reached the
+// tree, so a test can assert not just what a level concluded but what it
+// had to read to conclude it.
+type counts struct{ lists, stats, compares int }
+
 // pump simulates the UI's Update loop: it's the only goroutine allowed to
 // mutate the tree, draining result channels into it until cond is true.
-func pump(t *testing.T, s *Session, timeout time.Duration, cond func() bool) {
+func (c *counts) pump(t *testing.T, s *Session, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.After(timeout)
 	for {
@@ -37,13 +42,23 @@ func pump(t *testing.T, s *Session, timeout time.Duration, cond func() bool) {
 		}
 		select {
 		case r := <-s.ListResults():
+			c.lists++
 			s.OnListResult(r)
+		case r := <-s.StatResults():
+			c.stats++
+			s.OnStatResult(r)
 		case r := <-s.CompareResults():
+			c.compares++
 			s.OnCompareResult(r)
 		case <-deadline:
 			t.Fatal("timed out waiting for condition")
 		}
 	}
+}
+
+func pump(t *testing.T, s *Session, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	new(counts).pump(t, s, timeout, cond)
 }
 
 func TestBFSEventuallyListsWholeTree(t *testing.T) {
@@ -124,24 +139,35 @@ func TestRecursiveTriggerOnNotYetListedDirectoryStillArms(t *testing.T) {
 	}
 }
 
-// drainPending applies any results already sitting in the channels
+// drain applies any results already sitting in the channels
 // (non-blocking after a short allowance for trailing work to land), for
 // tests asserting a settled state once no further work is expected.
-func drainPending(t *testing.T, s *Session) {
+func (c *counts) drain(t *testing.T, s *Session) {
 	t.Helper()
 	time.Sleep(100 * time.Millisecond)
 	for {
 		select {
 		case r := <-s.ListResults():
+			c.lists++
 			s.OnListResult(r)
 			continue
+		case r := <-s.StatResults():
+			c.stats++
+			s.OnStatResult(r)
+			continue
 		case r := <-s.CompareResults():
+			c.compares++
 			s.OnCompareResult(r)
 			continue
 		default:
 		}
 		break
 	}
+}
+
+func drainPending(t *testing.T, s *Session) {
+	t.Helper()
+	new(counts).drain(t, s)
 }
 
 func TestNonRecursiveTriggerOnlyAffectsDirectChildren(t *testing.T) {
@@ -294,17 +320,18 @@ func TestSubtreePendingCompareTracksAncestorsAndClears(t *testing.T) {
 	if !ok {
 		t.Fatal("sub not found")
 	}
-	if s.Tree.PendingCompare != 0 || sub.PendingCompare != 0 {
-		t.Fatalf("PendingCompare nonzero before any compare triggered: root=%d sub=%d", s.Tree.PendingCompare, sub.PendingCompare)
+	if s.Tree.ExaminePending() || sub.ExaminePending() {
+		t.Fatal("examination already pending before any compare was triggered")
 	}
 
 	s.TriggerCompare(s.Tree, diffmodel.Checksum, true)
 
-	// armRecursive enqueues compare jobs for already-known descendants
+	// armRecursive enqueues jobs for already-known descendants
 	// synchronously, so the ancestor counts must already be raised here,
-	// before anything is pumped.
-	if s.Tree.PendingCompare == 0 || sub.PendingCompare == 0 {
-		t.Fatalf("PendingCompare not raised on root/sub right after TriggerCompare: root=%d sub=%d", s.Tree.PendingCompare, sub.PendingCompare)
+	// before anything is pumped. A content trigger starts with the two
+	// sides' metadata, so what's outstanding right now is the stat pair.
+	if !s.Tree.ExaminePending() || !sub.ExaminePending() {
+		t.Fatal("no examination pending on root/sub right after TriggerCompare")
 	}
 
 	pump(t, s, 5*time.Second, func() bool {
@@ -313,8 +340,8 @@ func TestSubtreePendingCompareTracksAncestorsAndClears(t *testing.T) {
 	})
 	drainPending(t, s)
 
-	if s.Tree.PendingCompare != 0 || sub.PendingCompare != 0 {
-		t.Fatalf("PendingCompare = root:%d sub:%d once the compare has completed; want 0/0", s.Tree.PendingCompare, sub.PendingCompare)
+	if s.Tree.ExaminePending() || sub.ExaminePending() {
+		t.Fatalf("examination still pending once the compare has completed: root compare=%d sub compare=%d", s.Tree.PendingCompare, sub.PendingCompare)
 	}
 }
 
@@ -401,10 +428,120 @@ func TestFileDirNameCollisionListingSettles(t *testing.T) {
 	}
 }
 
-// A comparison's size and mtime describe one side's file, not the
-// comparison, so they're recorded in the side trees even when the
-// verdict itself is stale and monotonicity discards it (SPEC.md §5.3).
-func TestStaleCompareResultStillRecordsMetadata(t *testing.T) {
+// The metadata level costs no content reads at all: every verdict it
+// produces is an equality test over two stat results.
+func TestMetadataLevelOpensNoFiles(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	mustWrite(t, filepath.Join(left, "same.txt"), "hello")
+	mustWrite(t, filepath.Join(right, "same.txt"), "hello")
+	mustWrite(t, filepath.Join(left, "diff.txt"), "hello")
+	mustWrite(t, filepath.Join(right, "diff.txt"), "hello!!!")
+	if err := os.Symlink("/a", filepath.Join(left, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/b", filepath.Join(right, "link")); err != nil {
+		t.Fatal(err)
+	}
+	sameTime := time.Now().Add(-time.Hour)
+	for _, dir := range []string{left, right} {
+		if err := os.Chtimes(filepath.Join(dir, "same.txt"), sameTime, sameTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := New(left, right, 2, 2, diffmodel.SizeMtime)
+	defer s.Close()
+
+	var c counts
+	c.pump(t, s, 5*time.Second, func() bool {
+		for _, name := range []string{"same.txt", "diff.txt", "link"} {
+			n, ok := s.Node(name)
+			if !ok || n.Level == diffmodel.NotCompared {
+				return false
+			}
+		}
+		return true
+	})
+	c.drain(t, s)
+
+	if c.compares != 0 {
+		t.Errorf("%d content comparisons ran at --level=metadata; want none", c.compares)
+	}
+	for name, want := range map[string]diffmodel.CompareResult{
+		"same.txt": diffmodel.Same,
+		"diff.txt": diffmodel.Differs,
+		"link":     diffmodel.Differs,
+	} {
+		if n, _ := s.Node(name); n.Result != want {
+			t.Errorf("%s: Result = %v; want %v", name, n.Result, want)
+		}
+	}
+}
+
+// Two files of different lengths can't have equal content, so the
+// content level settles them from their sizes and never creates the job
+// (SPEC.md §5.1) — the one real read is the same-size pair, where the
+// sizes say nothing.
+func TestContentLevelSkipsFilesWhoseSizesAlreadyDiffer(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	mustWrite(t, filepath.Join(left, "sizes-differ.txt"), "hello")
+	mustWrite(t, filepath.Join(right, "sizes-differ.txt"), "hello!!!")
+	mustWrite(t, filepath.Join(left, "same-size.txt"), "aaaa")
+	mustWrite(t, filepath.Join(right, "same-size.txt"), "bbbb")
+
+	s := New(left, right, 2, 2, diffmodel.Checksum)
+	defer s.Close()
+
+	var c counts
+	c.pump(t, s, 5*time.Second, func() bool {
+		for _, name := range []string{"sizes-differ.txt", "same-size.txt"} {
+			n, ok := s.Node(name)
+			if !ok || n.Level != diffmodel.Checksum {
+				return false
+			}
+		}
+		return true
+	})
+	c.drain(t, s)
+
+	if c.compares != 1 {
+		t.Errorf("%d content comparisons ran; want exactly 1 — only the same-size pair needs reading", c.compares)
+	}
+	for _, name := range []string{"sizes-differ.txt", "same-size.txt"} {
+		n, _ := s.Node(name)
+		if n.Result != diffmodel.Differs || n.Level != diffmodel.Checksum {
+			t.Errorf("%s: Result=%v Level=%v; want Differs at the content level either way", name, n.Result, n.Level)
+		}
+	}
+}
+
+// The gap this closes: a one-sided entry has no counterpart to be
+// compared against, so it was never measured and its subtree reported
+// "size ?" forever (SPEC.md §4.2).
+func TestOneSidedEntriesAreMeasured(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	mustMkdir(t, filepath.Join(left, "onlyleft"))
+	mustWrite(t, filepath.Join(left, "onlyleft", "inside.txt"), "0123456789")
+
+	s := New(left, right, 2, 2, diffmodel.SizeMtime)
+	defer s.Close()
+
+	pump(t, s, 5*time.Second, func() bool {
+		n, ok := s.Node("onlyleft/inside.txt")
+		return ok && n.Left.HaveStat
+	})
+
+	onlyleft, _ := s.Node("onlyleft")
+	totals, _ := onlyleft.SideTotals()
+	if totals.Size != 10 || totals.SizedFiles != 1 || totals.Files != 1 {
+		t.Fatalf("left-only subtree totals = %+v; want its one file fully sized at 10 bytes", totals)
+	}
+}
+
+// Monotonicity (SPEC.md §5.3) across the two result kinds: metadata
+// arriving after a content verdict updates the size the details panel
+// shows without touching the verdict.
+func TestStatResultAfterAContentVerdictKeepsTheVerdict(t *testing.T) {
 	s := New(t.TempDir(), t.TempDir(), 1, 1, diffmodel.NotCompared)
 	defer s.Close()
 
@@ -418,23 +555,52 @@ func TestStaleCompareResultStillRecordsMetadata(t *testing.T) {
 		t.Fatal("f.txt not found")
 	}
 
-	s.OnCompareResult(scan.CompareOutcome{
-		RelPath: "f.txt", Level: diffmodel.Checksum, Result: diffmodel.Differs,
-		Stat: &diffmodel.StatInfo{LeftSize: 1, RightSize: 1},
-	})
-	s.OnCompareResult(scan.CompareOutcome{
-		RelPath: "f.txt", Level: diffmodel.SizeMtime, Result: diffmodel.Same,
-		Stat: &diffmodel.StatInfo{LeftSize: 2, RightSize: 2},
-	})
+	s.OnCompareResult(scan.CompareOutcome{RelPath: "f.txt", Level: diffmodel.Checksum, Result: diffmodel.Same})
+	for _, sd := range diffmodel.Sides {
+		s.OnStatResult(scan.StatResult{Side: sd, RelPath: "f.txt", Size: 2048, Mtime: time.Unix(int64(sd), 0)})
+	}
 
-	if n.Level != diffmodel.Checksum || n.Result != diffmodel.Differs {
-		t.Fatalf("Level=%v Result=%v; want the deeper verdict to survive", n.Level, n.Result)
+	if n.Level != diffmodel.Checksum || n.Result != diffmodel.Same {
+		t.Fatalf("Level=%v Result=%v; want the content verdict kept despite the differing mtimes", n.Level, n.Result)
 	}
-	if !n.Left.HaveStat || n.Left.Size != 2 {
-		t.Fatalf("left metadata = %d (HaveStat=%v); want the later size, 2", n.Left.Size, n.Left.HaveStat)
+	if left, _ := s.Tree.SideTotals(); left.Size != 2048 || left.SizedFiles != 1 {
+		t.Fatalf("root left totals = %d bytes over %d files; want 2048 over 1", left.Size, left.SizedFiles)
 	}
-	if left, _ := s.Tree.SideTotals(); left.Size != 2 || left.SizedFiles != 1 {
-		t.Fatalf("root left totals = %d bytes over %d files; want 2 over 1", left.Size, left.SizedFiles)
+}
+
+// Metadata reads are triggered work like any other, so the cancel key
+// drops them too — and unwinds the per-side counts the dropped jobs were
+// being tracked by (SPEC.md §5.4).
+func TestCancelPendingComparesDropsQueuedStatJobs(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	for i := 0; i < 50; i++ {
+		name := fmt.Sprintf("f%d.txt", i)
+		mustWrite(t, filepath.Join(left, name), "x")
+		mustWrite(t, filepath.Join(right, name), "x")
+	}
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
+	defer s.Close()
+
+	pump(t, s, 5*time.Second, func() bool { return s.Tree.Listed() })
+
+	s.TriggerCompare(s.Tree, diffmodel.SizeMtime, false)
+	if l, _ := s.Tree.PendingStat(); l == 0 {
+		t.Fatal("left PendingStat = 0 right after a metadata trigger; want the stat jobs counted")
+	}
+	s.CancelPendingCompares()
+
+	if stats := s.Stats(); stats.CmpPending != 0 {
+		t.Fatalf("CmpPending = %d after cancel; want 0", stats.CmpPending)
+	}
+	// Whatever the single worker had already picked up still reports back.
+	pump(t, s, 5*time.Second, func() bool {
+		st := s.Stats()
+		return st.CmpPending == 0 && st.CmpActive == 0
+	})
+	drainPending(t, s)
+
+	if l, r := s.Tree.PendingStat(); l != 0 || r != 0 {
+		t.Fatalf("PendingStat = %d/%d after cancel and drain; want 0/0", l, r)
 	}
 }
 

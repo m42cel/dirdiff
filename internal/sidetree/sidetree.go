@@ -24,12 +24,16 @@ type Node struct {
 	RelPath string
 	Parent  *Node
 
-	// HaveStat reports whether Size/Mtime have actually been read. A
-	// directory is never statted (it contributes a count to the totals,
-	// not a size), so this only ever becomes true for a file or symlink.
-	HaveStat bool
-	Size     int64
-	Mtime    time.Time
+	// HaveStat reports whether a stat result has landed for this entry —
+	// including a failed one, which is what StatErr records. A directory
+	// is never statted (it contributes a count to the totals, not a
+	// size), so this only ever becomes true for a file or symlink, and
+	// Size/Mtime/LinkTarget mean anything only while StatErr is nil.
+	HaveStat   bool
+	StatErr    error
+	Size       int64
+	Mtime      time.Time
+	LinkTarget string // symlinks only (SPEC.md §7)
 
 	// Directory-only fields.
 	Listed   bool
@@ -37,12 +41,15 @@ type Node struct {
 	ListErr  error
 	Children []*Node
 
-	// PendingListing counts listing jobs queued or in flight anywhere in
-	// this node's subtree, including itself. Package session keeps it in
-	// sync via AdjustPendingListing as jobs are enqueued and results
-	// applied, so a directory can tell whether this side of it is still
-	// being discovered.
+	// PendingListing and PendingStat count listing and metadata jobs
+	// queued or in flight anywhere in this node's subtree, including
+	// itself. Package session keeps them in sync via AdjustPending* as
+	// jobs are enqueued and results applied, so a directory can tell
+	// whether this side of it is still being discovered or measured.
+	// Both are per side because both kinds of job read one side alone —
+	// unlike a content comparison, which is a statement about a pair.
 	PendingListing int
+	PendingStat    int
 
 	// totals is what this node's descendants hold, kept incrementally by
 	// one upward walk per mutation rather than a subtree walk per render
@@ -149,15 +156,25 @@ func sortChildren(children []*Node) {
 	})
 }
 
+// Stat is the metadata a stat job read for one entry.
+type Stat struct {
+	Size       int64
+	Mtime      time.Time
+	LinkTarget string
+	Err        error
+}
+
 // ApplyStat records metadata read for n. A directory is never statted
 // and a symlink's size is never counted (comparing one reads its target
 // string, not the file it names, SPEC.md §7), so only a file ever
-// contributes a size to the totals — but HaveStat is recorded either
-// way, since the details panel shows an mtime for both.
-func ApplyStat(n *Node, size int64, mtime time.Time) {
+// contributes a size to the totals — but the result is recorded either
+// way, since the details panel shows an mtime for both and a symlink is
+// compared by the target this read.
+func ApplyStat(n *Node, s Stat) {
 	before := ownContribution(n)
 	n.HaveStat = true
-	n.Size, n.Mtime = size, mtime
+	n.StatErr = s.Err
+	n.Size, n.Mtime, n.LinkTarget = s.Size, s.Mtime, s.LinkTarget
 	// The ancestors' totals count descendants only, so the delta starts
 	// at the parent.
 	adjustTotalsUpward(n.Parent, ownContribution(n).sub(before))
@@ -168,6 +185,13 @@ func ApplyStat(n *Node, size int64, mtime time.Time) {
 func AdjustPendingListing(n *Node, delta int) {
 	for cur := n; cur != nil; cur = cur.Parent {
 		cur.PendingListing += delta
+	}
+}
+
+// AdjustPendingStat is AdjustPendingListing for metadata jobs.
+func AdjustPendingStat(n *Node, delta int) {
+	for cur := n; cur != nil; cur = cur.Parent {
+		cur.PendingStat += delta
 	}
 }
 
@@ -210,7 +234,7 @@ func ownContribution(n *Node) Totals {
 	default:
 		t.Files = 1
 	}
-	if n.HaveStat && n.Type == diffmodel.File {
+	if n.HaveStat && n.StatErr == nil && n.Type == diffmodel.File {
 		t.Size, t.SizedFiles = n.Size, 1
 	}
 	return t

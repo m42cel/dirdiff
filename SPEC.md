@@ -182,22 +182,24 @@ side's line names it as absent (the same "<does not exist>" wording as
 the one-sided pane placeholder, §4.3) rather than being printed as a
 misleading "0 directories · 0 files · 0 B".
 
-Size, unlike the counts, is never measured for its own sake: it is only
-ever the size metadata a comparison already had to read (§5.1's metadata
-level, which stats both sides anyway). No extra `stat()` call is ever
-issued just to total a directory. Consequently:
+Size, unlike the counts, is never measured for its own sake: no `stat()`
+is issued that a triggered comparison didn't ask for (§5.1's metadata
+level). What that level reads is per side, so it covers entries with no
+counterpart as well — a one-sided subtree reports a real size rather than
+being permanently unmeasurable. Consequently:
 
-- A file not yet compared, and a file existing on one side only (which
-  has nothing to be compared against), contributes no size.
+- A file not yet reached by a metadata (or deeper) level contributes no
+  size; once it is, it does, whether or not it exists on both sides.
 - A symlink never contributes a size at all — comparing one reads its
   link target, not a file (§7) — which is why symlinks are counted apart
   from files rather than folded into the file count.
 - While any file under the directory is unsized, the total is shown as a
   lower bound, alongside how many of the files are actually sized
   ("≥1.4 MiB (12/40 files sized)"), so a partial figure can't be mistaken
-  for a complete one.
+  for a complete one. It converges to the exact figure as the level
+  sweeps the subtree.
 - When none of them is sized — the steady state under `--level=none`,
-  where nothing is ever compared — the size shows as `?` rather than a
+  where nothing is ever measured — the size shows as `?` rather than a
   misleading `0 B`. A directory that genuinely holds no files shows `0 B`,
   since nothing about it is unknown.
 
@@ -339,8 +341,24 @@ idle.
 | Level | What it checks | Cost |
 |---|---|---|
 | *(baseline, automatic)* Existence | Entry present on both sides, by name+type | Free — a byproduct of directory listing, not a triggered action |
-| Metadata | File size **and** modification time equal (one `stat()`/`lstat()` per file; both fields must match) | Cheap, one syscall per file |
+| Metadata | File size **and** modification time equal (one `lstat()` per file **per side**; both fields must match) | Cheap, one syscall per file per side |
 | Content | Streaming byte-for-byte comparison, reading both files in parallel chunks and short-circuiting on first difference (not a hash/checksum — a direct read of both sides) | Expensive — full (or partial, on early mismatch) file read of both sides |
+
+The metadata level is a per-side read, not a two-sided comparison: each
+side's entry is `lstat()`ed once into that side's own state, and the
+verdict is then an equality test over the two results — no I/O, and the
+same answer however the two sides were matched. A symlink is settled the
+same way, by the two link targets the reads returned (§7), so it never
+reaches the compare pool at all. Because the read is per side, it also
+covers entries that exist on one side only, which is what makes §4.2's
+totals complete.
+
+The content level inherits a precheck from that: two files of different
+lengths cannot have equal content, so a size mismatch is already a
+conclusive content verdict and the read is never performed. The check
+applies where the job would be created — a file whose two sides are known
+to differ in size never becomes a job — and again inside the job, for a
+file that changed since it was measured.
 
 Size and mtime are a single combined level ("metadata"), not two separate
 ones — a file only counts as "same" at this level if both match.
@@ -374,14 +392,15 @@ known result.
 ### 5.4 Job lifecycle and cancellation
 
 - Triggered comparisons (single-dir or recursive) are enqueued as jobs on
-  the checksum/compare worker pool, prioritized above ambient background
-  listing work.
+  the examination worker pool, prioritized above ambient background
+  listing work. So are the metadata reads a level needs (§5.1) — they are
+  triggered work in exactly the same sense.
 - Navigating away from a directory with in-flight or queued jobs does
   **not** cancel them — they keep running at lower priority (deprioritized
   below whatever you navigate into next) and their results fill in
   whenever you scroll back, updating rollup status live.
-- There is a global cancel/clear-queue key (e.g. `Esc` or `X`) to drop all
-  pending (not yet started) queued comparison jobs.
+- There is a global cancel/clear-queue key (`x`) to drop all pending (not
+  yet started) queued examination jobs, metadata reads included.
 
 ## 6. Status indicators
 
@@ -450,12 +469,17 @@ On startup:
 
 Two separate pools:
 
-- **Listing pool** — handles directory reads (`readdir`) for the BFS
-  traversal. Small, fast jobs; sized to stay responsive even under load
-  from the checksum pool.
-- **Checksum/compare pool** — handles size `stat()` calls, mtime checks,
-  and byte-wise checksum comparisons. This is where expensive, I/O-heavy
-  work happens.
+- **Listing pool** — ambient discovery: directory reads (`readdir`) for
+  the BFS traversal. Small, fast jobs; sized to stay responsive even under
+  load from the other pool.
+- **Examination pool** — triggered work: the per-side `lstat()` calls of
+  the metadata level and the byte-wise content comparisons. This is where
+  expensive, I/O-heavy work happens.
+
+The split is between work nobody asked for and work somebody did, rather
+than merely between cheap and expensive: everything in the examination
+pool is the product of a trigger (§5.2) or of `--level`'s ambient arming,
+and is therefore what `x` cancels (§5.4).
 
 Keeping these separate ensures a large recursive checksum job doesn't
 starve the ambient directory-listing scan (and vice versa), which matters

@@ -120,6 +120,26 @@ func (f *fixture) find(relPath string) *Node {
 	return walk(f.root)
 }
 
+// stat feeds one side's metadata for the row at relPath and applies
+// whatever verdict that makes possible, the way session does on a stat
+// result.
+func (f *fixture) stat(relPath string, sd diffmodel.Side, s sidetree.Stat) {
+	sidetree.ApplyStat(f.trees[sd].Index[relPath], s)
+	if p := f.find(relPath); p != nil {
+		ApplyMetadata(p)
+	}
+}
+
+// statBoth is stat on both sides at once, for a row whose two sides are
+// measured before anything asks about the verdict.
+func (f *fixture) statBoth(relPath string, left, right sidetree.Stat) {
+	sidetree.ApplyStat(f.trees[diffmodel.Left].Index[relPath], left)
+	sidetree.ApplyStat(f.trees[diffmodel.Right].Index[relPath], right)
+	if p := f.find(relPath); p != nil {
+		ApplyMetadata(p)
+	}
+}
+
 func sideOf(p *Node, sd diffmodel.Side) *sidetree.Node {
 	if sd == diffmodel.Right {
 		return p.Right

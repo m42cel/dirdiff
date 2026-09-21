@@ -138,6 +138,45 @@ func TestOpenPairingMidListingFillsIn(t *testing.T) {
 	}
 }
 
+// A recursive trigger armed on a sub-compare has to keep reaching rows
+// as its subtree is listed, exactly as it does in the root pairing —
+// the re-check runs per pairing, on that pairing's own rows.
+func TestRecursiveTriggerInASubPairingReachesLaterRows(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	mustMkdir(t, filepath.Join(left, "old-name", "nested"))
+	mustMkdir(t, filepath.Join(right, "new-name", "nested"))
+	mustWrite(t, filepath.Join(left, "old-name", "nested", "deep.txt"), "hello")
+	mustWrite(t, filepath.Join(right, "new-name", "nested", "deep.txt"), "world")
+
+	s := New(left, right, 1, 1, diffmodel.NotCompared)
+	defer s.Close()
+
+	// Stop as soon as the two directories themselves are rows: their
+	// contents are not listed yet, so the trigger below has nothing to
+	// enqueue and must survive until listing catches up.
+	pump(t, s, 5*time.Second, func() bool {
+		_, okL := s.sides[diffmodel.Left].tree.Index["old-name"]
+		_, okR := s.sides[diffmodel.Right].tree.Index["new-name"]
+		return okL && okR
+	})
+
+	id, p := openPairing(t, s, "old-name", "new-name")
+	if len(p.Root.Children) != 0 {
+		t.Fatal("the paired subtree is already listed; the trigger would have something to enqueue and the test would prove nothing")
+	}
+	s.Navigate(id, p.Root)
+	s.TriggerCompare(id, p.Root, diffmodel.Checksum, true)
+
+	pump(t, s, 10*time.Second, func() bool {
+		n, ok := p.Row("nested/deep.txt")
+		return ok && n.Level == diffmodel.Checksum
+	})
+	n, _ := p.Row("nested/deep.txt")
+	if n.Result != diffmodel.Differs {
+		t.Fatalf("Result = %v; want Differs", n.Result)
+	}
+}
+
 // A content verdict is a statement about a pair, so it belongs to the
 // pairing that asked for it and to no other.
 func TestContentVerdictsDoNotLeakBetweenPairings(t *testing.T) {

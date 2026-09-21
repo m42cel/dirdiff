@@ -40,25 +40,25 @@ func selectRow(t *testing.T, m Model, name string) Model {
 	return m
 }
 
-// subCompare runs the whole flow: p, choose the left directory, choose
+// subCompare runs the whole flow: s, choose the left directory, choose
 // the right one.
 func subCompare(t *testing.T, m Model, leftName, rightName string) Model {
 	t.Helper()
-	m = press(t, m, "p")
+	m = press(t, m, "s")
 	m = selectRow(t, m, leftName)
 	m = press(t, m, " ")
 	m = selectRow(t, m, rightName)
 	return press(t, m, " ")
 }
 
-// The whole flow (SPEC.md §4.9): p, choose one side, move the cursor,
+// The whole flow (SPEC.md §4.9): s, choose one side, move the cursor,
 // choose the other.
 func TestChooseBothSidesAndPair(t *testing.T) {
 	m, _ := movedModel(t)
 
-	m = press(t, m, "p")
+	m = press(t, m, "s")
 	if m.picking == nil || m.picking.side != diffmodel.Left {
-		t.Fatal("p should start a selection, on the left side first")
+		t.Fatal("s should start a selection, on the left side first")
 	}
 
 	m = selectRow(t, m, "old-name")
@@ -101,7 +101,7 @@ func TestChooseBothSidesAndPair(t *testing.T) {
 func TestNavigationWorksUnchangedWhileChoosing(t *testing.T) {
 	m, _ := movedModel(t)
 
-	m = press(t, m, "p")
+	m = press(t, m, "s")
 	m = selectRow(t, m, "old-name")
 	for _, key := range []string{"right", "enter"} {
 		into := press(t, m, key)
@@ -126,7 +126,7 @@ func TestChoosingASideThatIsntThere(t *testing.T) {
 	m, _ := movedModel(t)
 
 	// old-name is left-only, so it can't be the right-hand side.
-	m = press(t, m, "p")
+	m = press(t, m, "s")
 	m = selectRow(t, m, "new-name")
 	m = press(t, m, " ") // fine: new-name is right-only, but we want its left…
 	if m.picking.left != nil {
@@ -151,7 +151,7 @@ func TestChoosingAFileIsRefused(t *testing.T) {
 	m, sess := newTestModel(t)
 	listBoth(sess, "", "a.txt")
 
-	m = press(t, m, "p")
+	m = press(t, m, "s")
 	m = press(t, m, " ")
 	if m.picking.left != nil {
 		t.Fatal("a sub-compare pairs directories, not files")
@@ -161,16 +161,16 @@ func TestChoosingAFileIsRefused(t *testing.T) {
 	}
 }
 
-// Esc abandons the selection and puts the view back where p was pressed,
+// Esc abandons the selection and puts the view back where s was pressed,
 // since navigating around to find a directory was incidental to an
 // operation that didn't happen.
 func TestCancellingRestoresWhereItStarted(t *testing.T) {
-	for _, key := range []string{"esc", "p"} {
+	for _, key := range []string{"esc", "s"} {
 		m, _ := movedModel(t)
 		m = selectRow(t, m, "new-name")
 		startIdx := m.cursorIdx
 
-		m = press(t, m, "p")
+		m = press(t, m, "s")
 		m = selectRow(t, m, "old-name")
 		m = press(t, m, " ")
 		m = press(t, m, "right") // wander off into the chosen directory
@@ -229,7 +229,7 @@ func TestLeavingIsRefusedWhileChoosing(t *testing.T) {
 	m = subCompare(t, m, "old-name", "new-name")
 	sub := m.pairing
 
-	m = press(t, m, "p")
+	m = press(t, m, "s")
 	m = press(t, m, "left") // up to the pair row
 	m = press(t, m, "left") // and would leave
 	if m.pairing != sub {
@@ -263,7 +263,7 @@ func TestLeavingTheRootPairingStaysPut(t *testing.T) {
 	}
 }
 
-// Sub-compares nest: p from inside one opens another, and ← pops back
+// Sub-compares nest: s from inside one opens another, and ← pops back
 // to the one it was opened from rather than all the way out.
 func TestSubComparesNest(t *testing.T) {
 	m, _ := movedModel(t)
@@ -320,7 +320,7 @@ func TestStatusBarFollowsTheSelection(t *testing.T) {
 		t.Errorf("where label = %q at the root pairing with nothing being chosen; want nothing said", got)
 	}
 
-	m = press(t, m, "p")
+	m = press(t, m, "s")
 	if got := m.whereLabel(); !strings.Contains(got, "LEFT") {
 		t.Errorf("where label = %q; want it to say which side is being chosen", got)
 	}
@@ -362,7 +362,7 @@ func TestChosenDirectoryIsMarkedAndTheOtherSideFades(t *testing.T) {
 		t.Errorf("left = %q outside a selection; want no choice marker", left)
 	}
 
-	m = press(t, m, "p")
+	m = press(t, m, "s")
 	m = selectRow(t, m, "a")
 	m = press(t, m, " ")
 

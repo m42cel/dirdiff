@@ -35,7 +35,13 @@ const (
 	// regardless of which fields the selected row populates.
 	detailsContentLines = 5
 	detailsPanelHeight  = detailsContentLines + 1 // +1 for the top border
-	statusBarHeight     = 3
+
+	// statusBarFixedLines is the part of the status bar that's always
+	// exactly one line: where you are, and what the queues are doing. The
+	// settings and the key legend below it each wrap to however many the
+	// width needs, so the bar's total height is a function of the width —
+	// see Model.statusBarHeight.
+	statusBarFixedLines = 1
 
 	// spinnerInterval is how often pending-work glyphs advance to their
 	// next animation frame (see animGlyph in view.go). Every such glyph
@@ -70,7 +76,7 @@ type view struct {
 
 // selection is a sub-compare being chosen, one side at a time: the panes
 // navigate in lockstep (SPEC.md §4.1), so there is no moment at which the
-// cursor stands in two unrelated directories — instead 'p' starts this,
+// cursor stands in two unrelated directories — instead 's' starts this,
 // Space chooses the directory under the cursor for whichever side is
 // being picked, and the second choice opens the pairing.
 type selection struct {
@@ -79,7 +85,7 @@ type selection struct {
 	side diffmodel.Side
 	left *sidetree.Node
 
-	// origin is where 'p' was pressed. Cancelling restores it, and it —
+	// origin is where 's' was pressed. Cancelling restores it, and it —
 	// not wherever the hunt for the second directory ended — is what goes
 	// on the view stack, so leaving the sub-compare later lands where the
 	// whole operation started.
@@ -374,7 +380,7 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.triggerCompare()
 	case "C":
 		m.triggerCompareDir()
-	case "p":
+	case "s":
 		m.startSelection()
 	case "n":
 		m.jumpDiff(true)
@@ -401,7 +407,7 @@ func (m Model) handleSelectionKey(key string) (tea.Model, tea.Cmd) {
 		m.showHelp = true
 	case " ":
 		m.choose()
-	case "esc", "p":
+	case "esc", "s":
 		m.cancelSelection()
 	default:
 		m.navigate(key)
@@ -535,7 +541,7 @@ func (m *Model) triggerCompareDir() {
 	m.sess.TriggerCompare(m.pairing, m.cursorDir, m.compareLevel, m.recursive)
 }
 
-// startSelection begins choosing a sub-compare ('p', SPEC.md §4.9),
+// startSelection begins choosing a sub-compare ('s', SPEC.md §4.9),
 // starting with its left side.
 func (m *Model) startSelection() {
 	m.picking = &selection{side: diffmodel.Left, origin: m.view}
@@ -723,7 +729,7 @@ func (m *Model) ensureCursorVisible() {
 }
 
 func (m Model) listAreaHeight() int {
-	h := m.height - paneBoxOverhead - paneTitleRows - detailsPanelHeight - statusBarHeight
+	h := m.height - paneBoxOverhead - paneTitleRows - detailsPanelHeight - m.statusBarHeight()
 	if h < 1 {
 		h = 1
 	}

@@ -83,7 +83,7 @@ dirdiff [flags] <left-dir> <right-dir>
 | `w` | Open the worker-count popup — resize the scan/compare pools live |
 | `c` | Compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or its whole subtree, with `r` on) |
 | `C` | Compare the current directory the same way, whatever the cursor is on and whatever the filter hides |
-| `p` | Start a sub-compare — choose a left directory, then a right one, and they're compared against each other whatever their paths (`Space` chooses, `Esc` cancels) |
+| `s` | Start a sub-compare — choose a left directory, then a right one, and they're compared against each other whatever their paths (`Space` chooses, `Esc` cancels) |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
 | `x` | Cancel all pending (not yet started) comparisons |
 | `?` | Toggle the help overlay |
@@ -105,13 +105,13 @@ other directly, whatever their paths.
 Both panes always navigate together, so you're never standing in two
 unrelated directories at once. Instead you choose one side at a time:
 
-1. Press `p`. The status bar asks for the **left** directory.
+1. Press `s`. The status bar asks for the **left** directory.
 2. Move to the old path — `↑`/`↓` to move, `→`/`Enter` to go in, `←` to
    go back up, all exactly as usual — and press `Space` to choose it.
 3. Go find the new path, anywhere in either tree, and press `Space`
    again. The sub-compare opens.
 
-`Esc` (or `p` again) cancels and puts you back where you started. While
+`Esc` (or `s` again) cancels and puts you back where you started. While
 you're choosing, the side you're not choosing from fades, and the
 directory you already picked is marked `▸` wherever it's on screen — the
 status bar names it the rest of the time, since it's usually scrolled
@@ -120,7 +120,7 @@ away by the time you've found its counterpart.
 The sub-compare opens as an ordinary view — same panes, same glyphs, same
 keys — with each pane titled by its own real path, which is the only
 visible difference. Press `←` past its top row to leave again.
-Sub-compares nest: `p` from inside one opens another, and `←` comes back
+Sub-compares nest: `s` from inside one opens another, and `←` comes back
 to the one you came from.
 
 Both sides must be directories; a row that doesn't exist on the side

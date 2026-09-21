@@ -677,36 +677,131 @@ func presenceLabel(p diffmodel.Presence) string {
 	}
 }
 
-func (m Model) renderStatusBar() string {
-	st := m.sess.Stats()
-	stats := fmt.Sprintf("Listing: %d pending, %d active · Comparing: %d pending, %d active",
-		st.ListPending, st.ListActive, st.CmpPending, st.CmpActive)
-	if where := m.whereLabel(); where != "" {
-		stats += " · " + where
-	}
+// hintItems is the key legend, one entry per key. They're wrapped to the
+// terminal width as whole entries: a key and what it does are only
+// legible together, so a line break never falls between them.
+var hintItems = []string{
+	"↑/↓ move",
+	"→/Enter open",
+	"←/Backspace up",
+	"l level",
+	"r recursive",
+	"f filter",
+	"w workers",
+	"c compare row",
+	"C compare dir",
+	"s sub-compare",
+	"n/N diff",
+	"x cancel",
+	"? help",
+	"q quit",
+}
 
+// itemSep joins the status bar's items, in every one of its regions.
+const itemSep = " · "
+
+// wrapItems lays items out across as many lines of at most width as it
+// takes, breaking between items and never inside one. An item too wide
+// to fit at all still gets its own line, and is left to the caller to
+// truncate.
+func wrapItems(items []string, width int) []string {
+	if width <= 0 {
+		// No window size yet (View renders nothing until there is one):
+		// one line keeps the height the layout assumes from ballooning.
+		return []string{strings.Join(items, itemSep)}
+	}
+	var lines []string
+	line := ""
+	for _, item := range items {
+		switch {
+		case line == "":
+			line = item
+		case len([]rune(line))+len(itemSep)+len([]rune(item)) <= width:
+			line += itemSep + item
+		default:
+			lines = append(lines, line)
+			line = item
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// statusHintLines is the key legend, wrapped to the current width.
+func (m Model) statusHintLines() []string { return wrapItems(hintItems, m.width) }
+
+// statusSettingsLines is the persistent settings, wrapped the same way.
+func (m Model) statusSettingsLines() []string {
 	recursiveLabel := "off"
 	if m.recursive {
 		recursiveLabel = "on"
 	}
-	settings := fmt.Sprintf("[level: %s | recursive: %s | filter: %s | scan workers: %d | compare workers: %d]",
-		compareLevelLabel(m.compareLevel), recursiveLabel, filterSetLabel(m.filter), m.sess.ListWorkers(), m.sess.CompareWorkers())
+	return wrapItems([]string{
+		"level: " + compareLevelLabel(m.compareLevel),
+		"recursive: " + recursiveLabel,
+		"filter: " + filterSetLabel(m.filter),
+		fmt.Sprintf("scan workers: %d", m.sess.ListWorkers()),
+		fmt.Sprintf("compare workers: %d", m.sess.CompareWorkers()),
+	}, m.width)
+}
 
-	// The last line is the keybinding hint, displaced by the selection
-	// prompt while one is running and by a note when there is one — all
-	// on the one line, because the panel's height has to stay fixed, and
-	// in that order of precedence: what just went wrong beats what to do
-	// next, which beats the general reference.
-	last := dimStyle.Render("↑/↓ move · →/Enter open · ←/Backspace up · l level · r recursive · f filter · w workers · c compare row · C compare dir · p sub-compare · n/N diff · x cancel · ? help · q quit")
-	if m.picking != nil {
-		last = pendingStyle.Render("Space choose · →/Enter go in · ←/Backspace up · Esc cancel")
-	}
-	if m.note != "" {
-		last = pendingStyle.Render(m.note)
+// statusBarHeight is how many lines the status bar occupies. It's a
+// function of the width alone — the two wrapped regions wrap by width,
+// and the top line is always exactly one — never of what happens to be
+// shown, because the list area is sized against it (listAreaHeight) and
+// would otherwise resize under the cursor every time a note appeared.
+// That's why a note or prompt is padded out to the legend's height
+// rather than shrinking the bar.
+func (m Model) statusBarHeight() int {
+	return statusBarFixedLines + len(m.statusSettingsLines()) + len(m.statusHintLines())
+}
+
+func (m Model) renderStatusBar() string {
+	st := m.sess.Stats()
+	// Where you are leads, because it's the part worth keeping when the
+	// line has to be cut: the queue counts are the same everywhere, while
+	// a sub-compare or a half-made choice is the context for everything
+	// else on screen.
+	top := fmt.Sprintf("Listing: %d pending, %d active · Comparing: %d pending, %d active",
+		st.ListPending, st.ListActive, st.CmpPending, st.CmpActive)
+	if where := m.whereLabel(); where != "" {
+		top = where + itemSep + top
 	}
 
-	return statusBarStyle.Render(truncate(stats, m.width)) + "\n" +
-		pendingStyle.Render(settings) + "\n" + truncate(last, m.width)
+	lines := []string{statusBarStyle.Render(truncate(top, m.width))}
+	for _, line := range m.statusSettingsLines() {
+		lines = append(lines, pendingStyle.Render(truncate(line, m.width)))
+	}
+	// The legend is displaced by the selection prompt while one is
+	// running and by a note when there is one, in that order of
+	// precedence: what just went wrong beats what to do next, which beats
+	// the general reference. Whatever displaces it takes one line and the
+	// rest are blanked, so the bar's height doesn't move under the panes.
+	hint := m.statusHintLines()
+	if msg := m.statusMessage(); msg != "" {
+		lines = append(lines, pendingStyle.Render(truncate(msg, m.width)))
+		for range hint[1:] {
+			lines = append(lines, "")
+		}
+	} else {
+		for _, line := range hint {
+			lines = append(lines, dimStyle.Render(truncate(line, m.width)))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// statusMessage is what displaces the key legend, if anything does.
+func (m Model) statusMessage() string {
+	switch {
+	case m.note != "":
+		return m.note
+	case m.picking != nil:
+		return "Space choose · →/Enter go in · ←/Backspace up · Esc cancel"
+	}
+	return ""
 }
 
 // whereLabel says which pairing is on screen and how a sub-compare
@@ -766,8 +861,8 @@ func helpView() string {
 		"w              open worker-count popup: scan / compare pool size, Enter to type a new value",
 		"c              compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or whole subtree, with r)",
 		"C              compare the current directory the same way, whatever the cursor is on and whatever the filter hides",
-		"p              start a sub-compare: choose a left directory, then a right one, and they're compared against each other whatever their paths",
-		"                 while choosing — Space takes the highlighted directory, →/Enter and ← navigate as usual, Esc (or p) cancels",
+		"s              start a sub-compare: choose a left directory, then a right one, and they're compared against each other whatever their paths",
+		"                 while choosing — Space takes the highlighted directory, →/Enter and ← navigate as usual, Esc (or s) cancels",
 		"                 ← past the top row of a sub-compare leaves it again",
 		"n / N          jump to next / previous difference",
 		"x              cancel all pending (not yet started) comparisons",

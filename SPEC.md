@@ -272,11 +272,23 @@ pairing's root, exactly as it would from inside it.
 
 ### 4.4 Status bar
 
-A persistent bottom status bar shows:
-- Current path (relative to each root) for both panes.
-- Background queue depth / activity summary, e.g.
-  `Listing: 1,204 pending · Comparing: 3 active, 42 pending`.
-- Context-relevant key hints for labeled/letter keybindings.
+A persistent bottom status bar shows, in three regions:
+- Where you are — the pairing on screen, or a sub-compare selection in
+  progress (§4.9) — followed by the background queue depth / activity
+  summary, e.g. `Listing: 1,204 pending · Comparing: 3 active, 42
+  pending`. Where you are leads, because it is the part worth keeping
+  when the line has to be cut.
+- The persistent settings: compare level, recursive, filter, and the two
+  pool sizes.
+- The key hints for the labeled/letter keybindings.
+
+The settings and the key hints each wrap to as many lines as the terminal
+width needs, breaking only between whole items — a key is never separated
+from what it does. The bar's height therefore depends on the width, and
+on nothing else: it is what the entry list is sized against (§4.1), so it
+must not change as content comes and goes. A one-off note, or the
+selection prompt (§4.9), displaces the key hints and is padded out to
+their height rather than shrinking the bar.
 
 ### 4.5 Help overlay
 
@@ -380,10 +392,10 @@ same panes, glyphs, details panel and keys.
 **Choosing.** The panes navigate in lockstep (§4.1), so there is no
 moment at which the cursor stands in two unrelated directories — which is
 what choosing a pairing would otherwise require. Instead one side is
-chosen at a time: `p` starts a selection, `Space` takes the directory
+chosen at a time: `s` starts a selection, `Space` takes the directory
 under the cursor for the side currently being chosen, and the second
-choice opens the pairing. `Esc` — or `p` again — cancels, restoring the
-view to where `p` was pressed, since navigating around to find a
+choice opens the pairing. `Esc` — or `s` again — cancels, restoring the
+view to where `s` was pressed, since navigating around to find a
 directory was incidental to an operation that didn't happen.
 
 The selection **adds** a key rather than rebinding any: every movement
@@ -401,8 +413,8 @@ whole root can be one half. Leaving the pairing entirely (§4.3.1's `←`)
 is refused while a selection is running, since it would close the very
 view the selection started in.
 
-**The stack.** `p` pushes the new pairing; `←` past its top row (§4.3.1)
-pops back to whichever view it was opened from. Sub-compares nest: `p`
+**The stack.** `s` pushes the new pairing; `←` past its top row (§4.3.1)
+pops back to whichever view it was opened from. Sub-compares nest: `s`
 from inside one pushes another, and popping returns to the one it was
 opened from rather than to the root. The root pairing is the bottom of
 the stack and is never popped.
@@ -685,7 +697,7 @@ plus the full reference via `?` (§4.5).
 | `w` | Open the worker-count popup: resize the scan/compare pools live (§4.8) |
 | `c` | Compare the selected row at the current level/recursive setting |
 | `C` | Compare the current directory at the current level/recursive setting |
-| `p` | Start choosing a sub-compare; while choosing, cancel it (§4.9) |
+| `s` | Start choosing a sub-compare; while choosing, cancel it (§4.9) |
 | `Space` | While choosing a sub-compare, take the highlighted directory for the side being chosen (§4.9) |
 | `Esc` | While choosing a sub-compare, cancel (§4.9) |
 | `n` / `N` | Jump to next / previous entry in the current directory whose status isn't "same" (only considers entries already compared at some level) |

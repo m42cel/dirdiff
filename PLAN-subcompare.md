@@ -1,7 +1,11 @@
 # Plan — independent side trees and sub-compares
 
-Status: proposal. Not yet reflected in `SPEC.md`; §-references below point at
-`SPEC.md` as it stands today.
+Status: implemented, phases 1–4. `SPEC.md` now describes the result, so it
+is the reference for *what dirdiff does*; this file is kept for the
+reasoning behind it — particularly §7.1 on why metadata collection stays
+triggered rather than folded into listing, which is the question that
+comes back. §-references below point at `SPEC.md` as it stood before the
+work, so some have since moved.
 
 ## 1. What we want
 

@@ -45,8 +45,13 @@ func movedTree(t *testing.T) (left, right string) {
 	mustMkdir(t, filepath.Join(right, "new-name", "nested"))
 	mustWrite(t, filepath.Join(left, "old-name", "same.txt"), "hello")
 	mustWrite(t, filepath.Join(right, "new-name", "same.txt"), "hello")
+	// Different *lengths*, not just different bytes: the metadata level
+	// calls two files the same when size and mtime both match (§5.1), and
+	// two files written back to back land in the same timestamp tick on a
+	// filesystem with coarse enough granularity. Sizes that differ make
+	// the verdict the same everywhere.
 	mustWrite(t, filepath.Join(left, "old-name", "nested", "deep.txt"), "aaa")
-	mustWrite(t, filepath.Join(right, "new-name", "nested", "deep.txt"), "bbb")
+	mustWrite(t, filepath.Join(right, "new-name", "nested", "deep.txt"), "bbbb")
 	return left, right
 }
 

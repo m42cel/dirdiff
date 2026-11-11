@@ -195,9 +195,13 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   is a function of the width — and of nothing else, since `listAreaHeight`
   is computed from it and must not move as notes come and go (a note or
   the selection prompt is padded to the legend's height, never shorter).
-  `View()` runs once per Bubble Tea message — every scan/compare result
-  and every spinner tick — so anything it does per row is on a very hot
-  path: keep it O(visible rows), never O(subtree). That's why the row
+  `View()` runs once per Bubble Tea message, so anything it does per row
+  is on a very hot path: keep it O(visible rows), never O(subtree).
+  Background results reach `Update` batched: `waitResults` blocks for one
+  result and then takes whatever is already queued behind it (up to
+  `resultBatchMax`), so a burst of results costs one render instead of
+  one each — and the batches grow precisely when the renders are slow,
+  since that's when results pile up in the channel. That's why the row
   filter reads `pairtree`'s per-status tallies and the details panel's
   directory totals read `sidetree`'s, instead of walking the subtree
   themselves. `atRootParent`

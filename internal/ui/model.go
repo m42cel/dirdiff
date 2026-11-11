@@ -50,6 +50,14 @@ const (
 	// "." / ".." / "..." vs. a directory's Braille spinner) cycle
 	// independently off the same clock without needing their own timer.
 	spinnerInterval = 400 * time.Millisecond
+
+	// resultBatchMax caps how many background results one message
+	// carries (see waitResults). The drain has to end at some point even
+	// while the worker pools keep feeding the channel, or a keypress
+	// would wait behind an arbitrarily long run of results; this is far
+	// past any realistic burst — the result channels themselves hold 64
+	// — while still being a bound.
+	resultBatchMax = 128
 )
 
 // view is one pairing on screen and where the cursor stands in it. A
@@ -165,45 +173,61 @@ func New(sess *session.Session) Model {
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		waitListResult(m.sess.ListResults()),
-		waitStatResult(m.sess.StatResults()),
-		waitCompareResult(m.sess.CompareResults()),
+		waitListResults(m.sess.ListResults()),
+		waitStatResults(m.sess.StatResults()),
+		waitCompareResults(m.sess.CompareResults()),
 		tickSpinner())
 }
 
-type listResultMsg struct{ r scan.ListResult }
-type statResultMsg struct{ r scan.StatResult }
-type compareResultMsg struct{ r session.CompareResult }
+type listResultsMsg struct{ rs []scan.ListResult }
+type statResultsMsg struct{ rs []scan.StatResult }
+type compareResultsMsg struct{ rs []session.CompareResult }
 type spinnerTickMsg struct{}
 
-func waitListResult(ch <-chan scan.ListResult) tea.Cmd {
+// waitResults blocks for the next result on ch, then takes whatever is
+// already queued behind it without blocking, and delivers the lot as one
+// message. Bubble Tea runs View once per message, so a burst of results
+// landing within the same few milliseconds would otherwise cost a full
+// re-render each even though only the burst's final state is ever seen.
+//
+// The batching is self-regulating: results only pile up in the channel
+// while the UI is busy with the previous message, so batches grow in
+// exactly the case where the renders would have been wasted, and a lone
+// result still arrives on its own with no added latency.
+func waitResults[T any](ch <-chan T, wrap func([]T) tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		r, ok := <-ch
 		if !ok {
 			return nil
 		}
-		return listResultMsg{r}
+		rs := []T{r}
+		for len(rs) < resultBatchMax {
+			select {
+			case r, ok := <-ch:
+				if !ok {
+					// The channel is done; the next wait returns nil and
+					// ends the listening loop. This batch is still good.
+					return wrap(rs)
+				}
+				rs = append(rs, r)
+			default:
+				return wrap(rs)
+			}
+		}
+		return wrap(rs)
 	}
 }
 
-func waitStatResult(ch <-chan scan.StatResult) tea.Cmd {
-	return func() tea.Msg {
-		r, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return statResultMsg{r}
-	}
+func waitListResults(ch <-chan scan.ListResult) tea.Cmd {
+	return waitResults(ch, func(rs []scan.ListResult) tea.Msg { return listResultsMsg{rs} })
 }
 
-func waitCompareResult(ch <-chan session.CompareResult) tea.Cmd {
-	return func() tea.Msg {
-		r, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return compareResultMsg{r}
-	}
+func waitStatResults(ch <-chan scan.StatResult) tea.Cmd {
+	return waitResults(ch, func(rs []scan.StatResult) tea.Msg { return statResultsMsg{rs} })
+}
+
+func waitCompareResults(ch <-chan session.CompareResult) tea.Cmd {
+	return waitResults(ch, func(rs []session.CompareResult) tea.Msg { return compareResultsMsg{rs} })
 }
 
 func tickSpinner() tea.Cmd {
@@ -217,20 +241,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureCursorVisible()
 		return m, nil
 
-	case listResultMsg:
-		m.sess.OnListResult(msg.r)
+	case listResultsMsg:
+		for _, r := range msg.rs {
+			m.sess.OnListResult(r)
+		}
 		m.clampCursor()
-		return m, waitListResult(m.sess.ListResults())
+		return m, waitListResults(m.sess.ListResults())
 
-	case statResultMsg:
-		m.sess.OnStatResult(msg.r)
+	case statResultsMsg:
+		for _, r := range msg.rs {
+			m.sess.OnStatResult(r)
+		}
 		m.clampCursor()
-		return m, waitStatResult(m.sess.StatResults())
+		return m, waitStatResults(m.sess.StatResults())
 
-	case compareResultMsg:
-		m.sess.OnCompareResult(msg.r)
+	case compareResultsMsg:
+		for _, r := range msg.rs {
+			m.sess.OnCompareResult(r)
+		}
 		m.clampCursor()
-		return m, waitCompareResult(m.sess.CompareResults())
+		return m, waitCompareResults(m.sess.CompareResults())
 
 	case spinnerTickMsg:
 		m.spinnerFrame++

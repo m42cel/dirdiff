@@ -74,7 +74,10 @@ func main() {
 	defer sess.Close()
 
 	m := ui.New(sess)
-	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
+	// Reduced frame rate to cut idle CPU: Bubble Tea's renderer ticks at
+	// this rate even when nothing changed. The latency is imperceptible
+	// for a file browser.
+	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithFPS(10)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "dirdiff:", err)
 		os.Exit(1)
 	}

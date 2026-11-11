@@ -18,13 +18,26 @@ import (
 
 func main() {
 	levelFlag := flag.String("level", "metadata", "initial comparison level to auto-apply recursively in the background: metadata|content|none (none = existence/listing only)")
-	scanWorkers := flag.Int("scan-workers", 1, "worker pool size for directory listing")
+	// Two by default, one per side: a listing job reads one side's
+	// directory, so a single worker would read the two sides one after
+	// the other and a directory's listing would take as long as both
+	// reads instead of the slower one. Beyond that, listing is cheap
+	// low-CPU I/O that doesn't benefit from scaling with core count.
+	scanWorkers := flag.Int("scan-workers", 2, "worker pool size for directory listing")
 	compareWorkers := flag.Int("compare-workers", runtime.GOMAXPROCS(0), "worker pool size for comparison")
+	showVersion := flag.Bool("version", false, "print version information and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] <left-dir> <right-dir>\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	// Answered before the argument check: --version is a question about
+	// the binary, not a comparison, so it needs no directories.
+	if *showVersion {
+		fmt.Println(currentVersionString())
+		return
+	}
 
 	if flag.NArg() != 2 {
 		flag.Usage()
@@ -74,7 +87,7 @@ func parseLevel(level string) (diffmodel.CompareLevel, error) {
 	case "metadata":
 		return diffmodel.SizeMtime, nil
 	case "content":
-		return diffmodel.Checksum, nil
+		return diffmodel.Content, nil
 	default:
 		return 0, fmt.Errorf("invalid --level %q (want metadata|content|none)", level)
 	}

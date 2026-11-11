@@ -27,7 +27,7 @@
 #   - a directory unreadable (chmod 000) on each side, to exercise the
 #     error status
 #   - larger files (~200KB) that are identical, and that differ only
-#     near the end, to exercise the chunked checksum comparison
+#     near the end, to exercise the chunked content comparison
 #   - a directory with 40 entries to exercise scrolling/virtualization
 #   - dotfiles, both identical and differing
 #   - a file and a directory with names much longer than a pane is ever
@@ -163,7 +163,7 @@ mkd L empty_dir_only_left
 
 ### A fully identical, multi-level nested subtree — every file and every
 ### directory the same on both sides, several levels down, so a recursive
-### checksum trigger should show a clean rollup all the way up. Distinct
+### content trigger should show a clean rollup all the way up. Distinct
 ### from same_dir/ (shallow, one nested level) and deep/ (mixes in a
 ### differing file).
 
@@ -195,7 +195,7 @@ mkd B unreadable_right
 chmod 000 "$LEFT/unreadable_left"
 chmod 000 "$RIGHT/unreadable_right"
 
-### Larger files, to exercise the chunked checksum comparison ###
+### Larger files, to exercise the chunked content comparison ###
 
 mkdir -p "$LEFT/large_files" "$RIGHT/large_files"
 dd if=/dev/urandom of="$LEFT/large_files/identical_large.bin" bs=1024 count=200 status=none

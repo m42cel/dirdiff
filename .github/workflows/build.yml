@@ -2,6 +2,11 @@ name: Build binaries
 
 on:
   workflow_call:
+    inputs:
+      version:
+        description: Version string compiled into the binary (reported by --version).
+        type: string
+        default: dev
 
 jobs:
   build:
@@ -27,9 +32,10 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
+          VERSION: ${{ inputs.version }}
         run: |
           mkdir -p build dist
-          go build -o build/dirdiff ./cmd/dirdiff
+          go build -ldflags "-X main.version=${VERSION}" -o build/dirdiff ./cmd/dirdiff
           tar -C build -czf dist/dirdiff_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz dirdiff
       - uses: actions/upload-artifact@v7
         with:

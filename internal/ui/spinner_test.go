@@ -9,14 +9,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
+	"github.com/m42cel/dirdiff/internal/scan"
 	"github.com/m42cel/dirdiff/internal/session"
 )
 
-// newTestModel wires a model to a real session over two copies of the
-// same directory layout, then applies the root listing the way the
-// Update loop does. Everything here drives Model.Update directly — no
+// newSpinnerTestModel wires a model to a real session over two copies of
+// the same directory layout, then applies both sides' root listings the
+// way the Update loop does. Everything here drives Model.Update directly — no
 // terminal involved.
-func newTestModel(t *testing.T, build func(root string)) Model {
+func newSpinnerTestModel(t *testing.T, build func(root string)) Model {
 	t.Helper()
 	left, right := filepath.Join(t.TempDir(), "l"), filepath.Join(t.TempDir(), "r")
 	for _, root := range []string{left, right} {
@@ -32,14 +33,15 @@ func newTestModel(t *testing.T, build func(root string)) Model {
 	m := New(sess)
 	m.width, m.height = 100, 30
 
-	// The worker calls Done before handing the result over, so once this
-	// arrives the root listing is no longer counted as outstanding.
-	tm, _ := m.Update(listResultMsg{<-sess.ListResults()})
+	// The worker calls Done before handing the result over, so once both
+	// arrive the root listings are no longer counted as outstanding.
+	rs := []scan.ListResult{<-sess.ListResults(), <-sess.ListResults()}
+	tm, _ := m.Update(listResultsMsg{rs})
 	return tm.(Model)
 }
 
 func TestSpinnerStopsOnceNothingIsPending(t *testing.T) {
-	m := newTestModel(t, func(root string) {})
+	m := newSpinnerTestModel(t, func(root string) {})
 
 	if m.sess.HasPendingWork() {
 		t.Fatalf("two empty directories should leave no work outstanding, stats = %+v", m.sess.Stats())
@@ -58,7 +60,7 @@ func TestSpinnerStopsOnceNothingIsPending(t *testing.T) {
 func TestSpinnerKeepsTickingWhileWorkIsOutstanding(t *testing.T) {
 	// More compare jobs than the result channel can hold, and nothing
 	// draining it: the queue stays non-empty for the whole test.
-	m := newTestModel(t, func(root string) {
+	m := newSpinnerTestModel(t, func(root string) {
 		for i := 0; i < 200; i++ {
 			if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%03d", i)), []byte("x"), 0o644); err != nil {
 				t.Fatal(err)
@@ -81,7 +83,7 @@ func TestSpinnerKeepsTickingWhileWorkIsOutstanding(t *testing.T) {
 }
 
 func TestSpinnerRestartsWhenNewWorkArrives(t *testing.T) {
-	m := newTestModel(t, func(root string) {
+	m := newSpinnerTestModel(t, func(root string) {
 		for i := 0; i < 200; i++ {
 			if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%03d", i)), []byte("x"), 0o644); err != nil {
 				t.Fatal(err)
@@ -105,7 +107,7 @@ func TestSpinnerRestartsWhenNewWorkArrives(t *testing.T) {
 }
 
 func TestKeypressWithoutWorkDoesNotStartTheSpinner(t *testing.T) {
-	m := newTestModel(t, func(root string) {})
+	m := newSpinnerTestModel(t, func(root string) {})
 	m.spinnerRunning = false
 
 	// 'r' only toggles a setting; it enqueues nothing.

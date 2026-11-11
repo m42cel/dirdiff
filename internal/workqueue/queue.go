@@ -1,15 +1,18 @@
 // Package workqueue provides a generic, key-deduplicated priority queue
 // used to back dirdiff's listing and comparison worker pools (SPEC.md §8).
 //
-// Jobs are identified by a string key (a RelPath). Pushing a job whose key
-// is already queued merges into the existing entry instead of duplicating
-// work. Pop order is driven entirely by proximity to a live "focus" path
-// (SPEC.md §8.3): descendants of the focus path always pop before anything
-// else, and within each of those two groups, jobs closer to the focus path
-// (in tree-edge distance) pop first. SetFocus changes the focus path and
-// re-establishes the heap invariant under the new ordering, so navigating
-// reprioritizes an entire subtree — at any depth, not just the focus's
-// direct children — without walking or touching individual queued jobs.
+// Jobs are identified by a string "/"-separated key — a path, optionally
+// prefixed with a namespace segment naming which tree that path is in
+// (SPEC.md §8.3). Pushing a job whose key is already queued merges into
+// the existing entry instead of duplicating work. Pop order is driven
+// entirely by proximity to a live "focus" path: descendants of the focus
+// path always pop before anything else, and within each of those two
+// groups, jobs closer to the focus path (in tree-edge distance) pop
+// first. SetFocus (one focus for the whole queue) and SetFoci (one per
+// namespace) change the focus and re-establish the heap invariant under
+// the new ordering, so navigating reprioritizes an entire subtree — at
+// any depth, not just the focus's direct children — without walking or
+// touching individual queued jobs.
 package workqueue
 
 import (
@@ -32,6 +35,17 @@ func pathSegments(p string) []string {
 		return nil
 	}
 	return strings.Split(p, "/")
+}
+
+// namespace is a key's first path segment. Keys of a queue serving more
+// than one tree are namespaced by it (e.g. "L/sub" and "R/sub" name the
+// same relative path in two unconnected trees), and each namespace is
+// measured against its own focus alone — see itemHeap.rank.
+func namespace(p string) string {
+	if i := strings.IndexByte(p, '/'); i >= 0 {
+		return p[:i]
+	}
+	return p
 }
 
 // isUnder reports whether key is focus itself or lies somewhere in focus's
@@ -60,17 +74,52 @@ func distance(focus, key string) int {
 
 type itemHeap[T any] struct {
 	items []*item[T]
-	focus string
+
+	// foci is what pop order is measured against. When namespaced, each
+	// entry governs the keys sharing its own first segment and no others
+	// (SetFoci); otherwise foci holds at most the one focus every key is
+	// measured against (SetFocus).
+	foci       []string
+	namespaced bool
+}
+
+// rank is how far key is from the focus governing it: whether it's in
+// that focus's subtree, and its tree-edge distance from it. A key whose
+// namespace has no focus is never "under" and falls back to its own
+// depth, which is the breadth-first order the initial scan wants
+// (SPEC.md §8.1) — never a distance to some other tree's focus, which
+// would be a number about a tree the key isn't even in.
+func (h itemHeap[T]) rank(key string) (under bool, dist int) {
+	focus, ok := h.focusFor(key)
+	if !ok {
+		return false, len(pathSegments(key))
+	}
+	return isUnder(focus, key), distance(focus, key)
+}
+
+func (h itemHeap[T]) focusFor(key string) (string, bool) {
+	if !h.namespaced {
+		if len(h.foci) == 0 {
+			return "", true
+		}
+		return h.foci[0], true
+	}
+	ns := namespace(key)
+	for _, f := range h.foci {
+		if namespace(f) == ns {
+			return f, true
+		}
+	}
+	return "", false
 }
 
 func (h itemHeap[T]) Len() int { return len(h.items) }
 func (h itemHeap[T]) Less(i, j int) bool {
-	a, b := h.items[i].key, h.items[j].key
-	ua, ub := isUnder(h.focus, a), isUnder(h.focus, b)
+	ua, da := h.rank(h.items[i].key)
+	ub, db := h.rank(h.items[j].key)
 	if ua != ub {
 		return ua
 	}
-	da, db := distance(h.focus, a), distance(h.focus, b)
 	if da != db {
 		return da < db
 	}
@@ -153,13 +202,48 @@ func (q *Queue[T]) Upsert(key string, payload T, merge func(old T) T) (created b
 // second at most, on user navigation, against jobs numbering at most in
 // the tens of thousands.
 func (q *Queue[T]) SetFocus(focus string) {
+	q.setFoci([]string{focus}, false)
+}
+
+// SetFoci is SetFocus for a queue whose keys span several unconnected
+// trees, each namespaced by the key's first segment (SPEC.md §8.3):
+// every job is measured against the focus sharing its own namespace, and
+// against no other. Two panes stand in two different paths, so one focus
+// string can no longer express what the user is looking at — and a
+// "distance" between a key and another namespace's focus is not a tree
+// distance at all, since the two share no ancestor: it degenerates to
+// the sum of both depths, which can undercut a genuine same-tree
+// distance and rank one tree's job by how deep the other pane happens to
+// be standing.
+//
+// A namespace with no focus among foci — a suspended pairing's leftover
+// jobs, or any namespace before the first navigation — is simply never
+// "under" anything, and its jobs pop in depth order within their own
+// tree.
+func (q *Queue[T]) SetFoci(foci ...string) {
+	q.setFoci(foci, true)
+}
+
+func (q *Queue[T]) setFoci(foci []string, namespaced bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.heap.focus == focus {
+	if q.heap.namespaced == namespaced && sameFoci(q.heap.foci, foci) {
 		return
 	}
-	q.heap.focus = focus
+	q.heap.foci, q.heap.namespaced = foci, namespaced
 	heap.Init(&q.heap)
+}
+
+func sameFoci(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Pop blocks until a job is available or the queue is closed. On success
@@ -267,6 +351,35 @@ func (q *Queue[T]) Clear() []string {
 	q.heap.items = nil
 	q.byKey = map[string]*item[T]{}
 	return keys
+}
+
+// ClearPrefix is Clear over one subtree of keys: it drops every
+// not-yet-started job at prefix or under it, and returns their keys. Used
+// to retire the work belonging to one namespace — a closed pairing's
+// content comparisons, say — while leaving everything else queued.
+// In-flight jobs already popped by a worker are unaffected, and a prefix
+// of "" clears the whole queue, the same as Clear.
+func (q *Queue[T]) ClearPrefix(prefix string) []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var dropped []string
+	kept := q.heap.items[:0]
+	for _, it := range q.heap.items {
+		if isUnder(prefix, it.key) {
+			dropped = append(dropped, it.key)
+			delete(q.byKey, it.key)
+			continue
+		}
+		it.index = len(kept)
+		kept = append(kept, it)
+	}
+	for i := len(kept); i < len(q.heap.items); i++ {
+		q.heap.items[i] = nil // let the dropped items be collected
+	}
+	q.heap.items = kept
+	heap.Init(&q.heap)
+	return dropped
 }
 
 // Close unblocks all workers currently waiting in Pop, which then return

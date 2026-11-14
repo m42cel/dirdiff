@@ -236,3 +236,100 @@ func TestListingSortsDirsFirstThenAlpha(t *testing.T) {
 		t.Fatalf("children = %v; want %v", names, want)
 	}
 }
+
+func childNames(n *Node) []string {
+	var out []string
+	for _, c := range n.Children {
+		name := c.Name
+		if c.IsDir() {
+			name += "/"
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+func all(string) bool { return true }
+
+func TestRefreshKeepsRemovesAndAdds(t *testing.T) {
+	tr := NewTree(diffmodel.Left)
+	tr.ApplyListing(tr.Root, entries("kept/", "gone/", "same.txt", "old.txt"), nil)
+	kept, gone := tr.Index["kept"], tr.Index["gone"]
+	tr.ApplyListing(gone, entries("deep.txt"), nil)
+	same := tr.Index["same.txt"]
+	ApplyStat(same, Stat{Size: 10, Mtime: time.Unix(1, 0)})
+	sameGen := same.Gen
+
+	removed, keptNodes, added := tr.Refresh(tr.Root, entries("kept/", "same.txt", "new.txt"), nil, all)
+
+	if fmt.Sprint(childNames(tr.Root)) != fmt.Sprint([]string{"kept/", "new.txt", "same.txt"}) {
+		t.Fatalf("children = %v", childNames(tr.Root))
+	}
+	if len(removed) != 2 || len(keptNodes) != 2 || len(added) != 1 {
+		t.Fatalf("removed %d, kept %d, added %d; want 2, 2, 1", len(removed), len(keptNodes), len(added))
+	}
+	if tr.Index["kept"] != kept || tr.Index["same.txt"] != same {
+		t.Fatal("a kept entry must stay the same node, so the rows showing it survive")
+	}
+	if tr.Contains(gone) || tr.Index["gone/deep.txt"] != nil {
+		t.Fatal("a removed directory must leave the index along with everything below it")
+	}
+	if same.HaveStat || same.Gen == sameGen {
+		t.Fatalf("kept file: HaveStat %v, Gen renewed %v; want its metadata forgotten and a new Gen", same.HaveStat, same.Gen != sameGen)
+	}
+	assertTotals(t, tr.Root)
+}
+
+func TestRefreshLeavesOutOfScopeChildrenAlone(t *testing.T) {
+	tr := NewTree(diffmodel.Left)
+	tr.ApplyListing(tr.Root, entries("a.txt", "b.txt"), nil)
+	a, b := tr.Index["a.txt"], tr.Index["b.txt"]
+	ApplyStat(b, Stat{Size: 5, Mtime: time.Unix(1, 0)})
+
+	// b.txt has gone and c.txt appeared, but only a.txt was asked about.
+	tr.Refresh(tr.Root, entries("a.txt", "c.txt"), nil, func(name string) bool { return name == "a.txt" })
+
+	if fmt.Sprint(childNames(tr.Root)) != fmt.Sprint([]string{"a.txt", "b.txt"}) {
+		t.Fatalf("children = %v; want the listing applied to a.txt alone", childNames(tr.Root))
+	}
+	if tr.Index["a.txt"] != a || !b.HaveStat {
+		t.Fatal("an out-of-scope sibling must keep everything it knew")
+	}
+	assertTotals(t, tr.Root)
+}
+
+// A file and a directory of the same name are two entries (SPEC.md
+// §3.1), so a type change is a removal plus an addition — and the
+// shared path must end up indexing the new one.
+func TestRefreshTreatsATypeChangeAsRemoveAndAdd(t *testing.T) {
+	tr := NewTree(diffmodel.Left)
+	tr.ApplyListing(tr.Root, entries("foo"), nil)
+	old := tr.Index["foo"]
+
+	removed, kept, added := tr.Refresh(tr.Root, entries("foo/"), nil, all)
+
+	if len(removed) != 1 || removed[0] != old || len(kept) != 0 || len(added) != 1 {
+		t.Fatalf("removed %v, kept %v, added %v", removed, kept, added)
+	}
+	if n := tr.Index["foo"]; n == nil || !n.IsDir() {
+		t.Fatalf("index[foo] = %+v; want the new directory", n)
+	}
+	assertTotals(t, tr.Root)
+}
+
+func TestRefreshUncountsJobsOfWhatItDiscards(t *testing.T) {
+	tr := NewTree(diffmodel.Left)
+	tr.ApplyListing(tr.Root, entries("gone/", "kept.txt"), nil)
+	gone, kept := tr.Index["gone"], tr.Index["kept.txt"]
+	tr.ApplyListing(gone, entries("sub/", "f.txt"), nil)
+	AdjustPendingListing(tr.Index["gone/sub"], 1)
+	AdjustPendingStat(tr.Index["gone/f.txt"], 1)
+	AdjustPendingStat(kept, 1)
+
+	tr.Refresh(tr.Root, entries("kept.txt"), nil, all)
+
+	if tr.Root.PendingListing != 0 || tr.Root.PendingStat != 0 || kept.PendingStat != 0 {
+		t.Fatalf("pending = listing %d, stat %d (kept file %d); want all 0 — those jobs' results will be discarded, so nothing else would ever settle them",
+			tr.Root.PendingListing, tr.Root.PendingStat, kept.PendingStat)
+	}
+}

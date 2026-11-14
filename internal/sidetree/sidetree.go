@@ -12,6 +12,7 @@ package sidetree
 
 import (
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
@@ -23,6 +24,13 @@ type Node struct {
 	Type    diffmodel.EntryType
 	RelPath string
 	Parent  *Node
+
+	// Gen identifies this node as it currently stands: unique when the
+	// node is created, and renewed whenever a refresh discards what was
+	// read about it. A job carries the Gen of the node it was created
+	// for, so a result that lands after its node was removed or re-read
+	// is recognisably stale even though its RelPath still resolves.
+	Gen uint64
 
 	// HaveStat reports whether a stat result has landed for this entry —
 	// including a failed one, which is what StatErr records. A directory
@@ -104,11 +112,30 @@ type Tree struct {
 // NewTree creates a tree holding just its root, which always exists
 // (main.go validates both roots before the TUI starts).
 func NewTree(side diffmodel.Side) *Tree {
-	root := &Node{Type: diffmodel.Dir}
+	root := &Node{Type: diffmodel.Dir, Gen: newGen()}
 	return &Tree{Side: side, Root: root, Index: map[string]*Node{"": root}}
 }
 
+// lastGen hands out Node.Gen values. It's shared by every tree, and
+// atomic only because tests run several sessions in parallel; within one
+// session every mutation happens on the UI's goroutine.
+var lastGen atomic.Uint64
+
+func newGen() uint64 { return lastGen.Add(1) }
+
 func (n *Node) IsDir() bool { return n.Type == diffmodel.Dir }
+
+// Contains reports whether n is still part of t — false once a refresh
+// has removed it, or an ancestor of it.
+func (t *Tree) Contains(n *Node) bool { return t.Index[n.RelPath] == n }
+
+// Walk calls fn for n and every node below it, parents first.
+func Walk(n *Node, fn func(*Node)) {
+	fn(n)
+	for _, c := range n.Children {
+		Walk(c, fn)
+	}
+}
 
 // Totals reports what n's descendants, at any depth, hold — n itself is
 // never counted, so a directory row reports what's inside it, and a
@@ -142,12 +169,107 @@ func (t *Tree) ApplyListing(n *Node, entries []diffmodel.ListedEntry, listErr er
 
 	n.Children = make([]*Node, 0, len(entries))
 	for _, e := range entries {
-		c := &Node{Name: e.Name, Type: e.Type, RelPath: childRelPath(n, e.Name)}
+		c := &Node{Name: e.Name, Type: e.Type, RelPath: childRelPath(n, e.Name), Gen: newGen()}
 		delta.add(linkChild(n, c))
 		t.Index[c.RelPath] = c
 	}
 	sortChildren(n.Children)
 	adjustTotalsUpward(n, delta)
+}
+
+// Refresh applies a fresh listing of n, an already-listed directory, to
+// the children inScope selects, and leaves every other child exactly as
+// it was (SPEC.md §5.5). Matching is by (name, type), as everywhere
+// (SPEC.md §3.1):
+//
+//   - removed: an in-scope child the listing no longer has. It's
+//     unlinked with its whole subtree and dropped from the index, and
+//     whatever jobs were counted for it are subtracted from the
+//     ancestors' pending counts, so a result still in flight for it must
+//     be discarded on arrival rather than applied (see Gen).
+//   - kept: an in-scope child the listing still has. It stays the same
+//     node, so every pairing showing it keeps its row, but a file or
+//     symlink forgets its metadata and gets a new Gen. A directory keeps
+//     its children here: they are only as stale as the directory's own
+//     listing, which the caller re-reads next.
+//   - added: an in-scope entry with no child yet, created unlisted and
+//     unstatted, the same as ApplyListing creates them.
+func (t *Tree) Refresh(n *Node, entries []diffmodel.ListedEntry, listErr error, inScope func(name string) bool) (removed, kept, added []*Node) {
+	n.Listing = false
+	n.ListErr = listErr
+
+	type key struct {
+		name string
+		typ  diffmodel.EntryType
+	}
+	fresh := map[key]bool{}
+	for _, e := range entries {
+		if inScope(e.Name) {
+			fresh[key{e.Name, e.Type}] = true
+		}
+	}
+
+	var delta Totals
+	have := map[key]bool{}
+	children := n.Children[:0:0]
+	for _, c := range n.Children {
+		k := key{c.Name, c.Type}
+		switch {
+		case !inScope(c.Name):
+			children = append(children, c)
+		case fresh[k]:
+			delta.add(forget(c))
+			have[k] = true
+			kept = append(kept, c)
+			children = append(children, c)
+		default:
+			delta = delta.sub(contribution(c))
+			AdjustPendingListing(n, -c.PendingListing)
+			AdjustPendingStat(n, -c.PendingStat)
+			t.unindex(c)
+			removed = append(removed, c)
+		}
+	}
+	n.Children = children
+
+	for _, e := range entries {
+		if !inScope(e.Name) || have[key{e.Name, e.Type}] {
+			continue
+		}
+		c := &Node{Name: e.Name, Type: e.Type, RelPath: childRelPath(n, e.Name), Gen: newGen()}
+		delta.add(linkChild(n, c))
+		t.Index[c.RelPath] = c
+		added = append(added, c)
+	}
+	sortChildren(n.Children)
+	adjustTotalsUpward(n, delta)
+	return removed, kept, added
+}
+
+// forget discards the metadata read for a kept file or symlink and
+// returns the change in what it counts for in its ancestors' totals,
+// which the caller applies from the parent up. Its own outstanding stat
+// is uncounted the same way a removed node's is, and its new Gen makes
+// that stat's result stale. A directory has no metadata of its own.
+func forget(n *Node) Totals {
+	if n.IsDir() {
+		return Totals{}
+	}
+	before := ownContribution(n)
+	n.HaveStat, n.StatErr = false, nil
+	n.Size, n.Mtime, n.LinkTarget = 0, time.Time{}, ""
+	AdjustPendingStat(n, -n.PendingStat)
+	n.Gen = newGen()
+	return ownContribution(n).sub(before)
+}
+
+// unindex drops n and everything below it from the index.
+func (t *Tree) unindex(n *Node) {
+	Walk(n, func(d *Node) {
+		if t.Index[d.RelPath] == d {
+			delete(t.Index, d.RelPath)
+		}
+	})
 }
 
 func sortChildren(children []*Node) {

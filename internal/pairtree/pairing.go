@@ -38,7 +38,7 @@ type Pairing struct {
 // rows their already-known contents allow.
 func NewPairing(left, right *sidetree.Node) *Pairing {
 	p := &Pairing{
-		Root: &Node{Left: left, Right: right, Type: diffmodel.Dir},
+		Root: &Node{Left: left, Right: right, Type: diffmodel.Dir, Gen: newGen()},
 		rowFor: [2]map[*sidetree.Node]*Node{
 			diffmodel.Left:  {},
 			diffmodel.Right: {},
@@ -54,13 +54,108 @@ func NewPairing(left, right *sidetree.Node) *Pairing {
 // descending into any new directory row whose own two sides happen to be
 // listed already — a row created after its subtree was scanned has no
 // listing result left to arrive, which is the normal case for a pairing
-// opened over a subtree the background scan already covered.
-func (p *Pairing) Merge(n *Node) {
-	for _, c := range Merge(n) {
+// opened over a subtree the background scan already covered. It returns
+// the rows it added directly under n.
+func (p *Pairing) Merge(n *Node) []*Node {
+	added := Merge(n)
+	for _, c := range added {
 		p.index(c)
 		if c.IsDir() {
 			p.Merge(c)
 		}
+	}
+	return added
+}
+
+// Refresh brings n's rows back in line with its sides after a refresh
+// has changed them (SPEC.md §5.5). kept reports whether a side node was
+// kept by that refresh, i.e. re-read rather than created or removed.
+//
+//   - removed: a row whose sides are no longer what n's sides hold under
+//     its (name, type) — one of them was removed, or a counterpart has
+//     appeared on a side it was missing from. A row's presence never
+//     changes (SPEC.md §3), so it's dropped with its subtree, and the
+//     Merge below builds its replacement from whatever sides remain.
+//   - reset: a row standing over a kept side node, which keeps its place
+//     but goes back to not compared (see Reset).
+//   - added: what that Merge built.
+func (p *Pairing) Refresh(n *Node, kept func(*sidetree.Node) bool) (removed, reset, added []*Node) {
+	var current [2]map[childKey]*sidetree.Node
+	for _, sd := range diffmodel.Sides {
+		sn := n.Side(sd)
+		if sn == nil {
+			continue
+		}
+		current[sd] = make(map[childKey]*sidetree.Node, len(sn.Children))
+		for _, c := range sn.Children {
+			current[sd][childKey{c.Name, c.Type}] = c
+		}
+	}
+
+	for _, c := range append([]*Node(nil), n.Children...) {
+		k := childKey{c.Name(), c.Type}
+		stale := false
+		for _, sd := range diffmodel.Sides {
+			if c.Side(sd) != current[sd][k] {
+				stale = true
+			}
+		}
+		switch {
+		case stale:
+			p.remove(c)
+			removed = append(removed, c)
+		case (c.Left != nil && kept(c.Left)) || (c.Right != nil && kept(c.Right)):
+			Reset(c)
+			reset = append(reset, c)
+		}
+	}
+	return removed, reset, p.Merge(n)
+}
+
+// remove unlinks n and its subtree from the tree and from the pairing's
+// indexes, taking its statuses out of the ancestors' tallies and its
+// outstanding content jobs out of their pending counts. Results still in
+// flight for it then find no row to land in (or a newer one, with a
+// different Gen) and are dropped.
+func (p *Pairing) remove(n *Node) {
+	parent := n.Parent
+	for i, c := range parent.Children {
+		if c == n {
+			parent.Children = append(parent.Children[:i], parent.Children[i+1:]...)
+			break
+		}
+	}
+	adjustTalliesUpward(parent, contribution(n).negated())
+	AdjustPendingCompare(parent, -n.PendingCompare)
+	Walk(n, func(d *Node) {
+		for _, sd := range diffmodel.Sides {
+			if sn := d.Side(sd); sn != nil && p.rowFor[sd][sn] == d {
+				delete(p.rowFor[sd], sn)
+			}
+		}
+		if p.rows[d.PairRel] == d {
+			delete(p.rows, d.PairRel)
+		}
+	})
+	recomputeResultUpward(parent)
+}
+
+// Contains reports whether n is still one of this pairing's rows — false
+// once a refresh has removed it, or an ancestor of it.
+func (p *Pairing) Contains(n *Node) bool {
+	for _, sd := range diffmodel.Sides {
+		if sn := n.Side(sd); sn != nil {
+			return p.rowFor[sd][sn] == n
+		}
+	}
+	return false
+}
+
+// Walk calls fn for n and every row below it, parents first.
+func Walk(n *Node, fn func(*Node)) {
+	fn(n)
+	for _, c := range n.Children {
+		Walk(c, fn)
 	}
 }
 

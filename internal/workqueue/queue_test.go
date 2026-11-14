@@ -249,6 +249,38 @@ func TestClearPrefixLeavesActiveJobsAlone(t *testing.T) {
 	}
 }
 
+func TestRemoveDropsExactKeysOnly(t *testing.T) {
+	q := New[string]()
+	for _, key := range []string{"L/foo", "L/foo/a", "L/foobar", "L/x/deep", "L/x"} {
+		q.Upsert(key, key, nil)
+	}
+	q.SetFoci("L/x")
+
+	dropped := q.Remove("L/foo", "L/missing")
+	if len(dropped) != 1 || dropped[0] != "L/foo" {
+		t.Fatalf("dropped %v; want just L/foo — never its descendants, and nothing for a key that wasn't queued", dropped)
+	}
+	for _, want := range []string{"L/x", "L/x/deep", "L/foobar", "L/foo/a"} {
+		_, key, _ := q.Pop()
+		if key != want {
+			t.Fatalf("Pop() key = %q; want %q (the heap must stay ordered after a removal)", key, want)
+		}
+	}
+}
+
+func TestRemoveLeavesActiveJobsAlone(t *testing.T) {
+	q := New[string]()
+	q.Upsert("L/a", "L/a", nil)
+	_, key, _ := q.Pop()
+
+	if dropped := q.Remove(key); len(dropped) != 0 {
+		t.Fatalf("dropped %v; want nothing — an in-flight job isn't queued", dropped)
+	}
+	if !q.IsPending(key) {
+		t.Fatal("Remove must not affect an already-active (in-flight) job")
+	}
+}
+
 func TestPopBlocksUntilUpsert(t *testing.T) {
 	q := New[string]()
 	done := make(chan struct{})

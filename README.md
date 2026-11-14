@@ -83,6 +83,8 @@ dirdiff [flags] <left-dir> <right-dir>
 | `w` | Open the worker-count popup — resize the scan/compare pools live |
 | `c` | Compare the selected row at the current level/recursive setting — a file on its own, a directory's entries (or its whole subtree, with `r` on) |
 | `C` | Compare the current directory the same way, whatever the cursor is on and whatever the filter hides |
+| `u` | Refresh the selected row — re-read it from disk (a directory with everything below it), picking up changes and removals |
+| `U` | Refresh the current directory the same way, including entries that are new since it was read |
 | `s` | Start a sub-compare — choose a left directory, then a right one, and they're compared against each other whatever their paths (`Space` chooses, `Esc` cancels) |
 | `n` / `N` | Jump to the next / previous difference in the current directory |
 | `x` | Cancel all pending (not yet started) comparisons |
@@ -93,6 +95,17 @@ A directory that exists on only one side is still navigable — the
 missing side shows a static placeholder. Existence is shown as soon as a
 directory is listed; metadata/content comparisons only run once you
 trigger them with `c`.
+
+### Refreshing
+
+What dirdiff shows is what it read, when it read it. If files change
+while it's running, `u` re-reads the selected row and `U` the current
+directory: deleted entries disappear, new ones appear, and anything that
+changed is measured again. A refreshed entry is compared at the
+`--level` dirdiff was started with and no deeper — a content comparison
+you ran by hand has to be run again with `c`. The old rows stay on screen
+until the new listing is in, and there's no file watching: changes are
+only picked up when you ask.
 
 ### Sub-compares: pairing two directories at different paths
 

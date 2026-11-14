@@ -74,7 +74,8 @@ the same side node can appear in any number of pairings at once.
 A row's children are built only once every side it actually has has been
 listed. Showing one side's entries before the other has listed would
 flash them as one-sided and then upgrade them, so a row's presence is
-fixed when the row is created and never changes afterwards.
+fixed when the row is created and never changes afterwards. A refresh
+(§5.5) replaces rows rather than changing them.
 
 What a pairing owns alone is its comparison verdicts — see §4.9.
 
@@ -479,9 +480,8 @@ file that changed since it was measured.
 
 Because metadata is read once and kept, what a row says is a snapshot of
 when it was read rather than of now — possibly minutes ago on a large
-tree. For a read-only viewer that is acceptable, but it is the argument
-for a future refresh key (re-list and re-measure a subtree), which v1
-does not have.
+tree. For a read-only viewer that is acceptable; when it isn't, a
+subtree can be re-read on demand (§5.5).
 
 Size and mtime are a single combined level ("metadata"), not two separate
 ones — a file only counts as "same" at this level if both match.
@@ -516,6 +516,9 @@ never downgrades the displayed status (§3.2). It may still redundantly
 re-verify the shallow condition, but the UI continues showing the deepest
 known result.
 
+Refresh (§5.5) is not an exception to this: it never lowers a row's
+result, it replaces the row with a new one that starts with no result.
+
 ### 5.4 Job lifecycle and cancellation
 
 - Triggered comparisons (single-dir or recursive) are enqueued as jobs on
@@ -527,7 +530,73 @@ known result.
   below whatever you navigate into next) and their results fill in
   whenever you scroll back, updating rollup status live.
 - There is a global cancel/clear-queue key (`x`) to drop all pending (not
-  yet started) queued examination jobs, metadata reads included.
+  yet started) queued examination jobs, metadata reads included. It
+  never touches listing jobs, including those a refresh (§5.5) queued.
+
+### 5.5 Refresh
+
+What dirdiff shows is a snapshot of when each entry was read (§5.1).
+Refresh re-reads part of it, for when files changed, appeared or were
+removed while dirdiff was running. It reads, it never writes: like
+everything else, it is `readdir` and `lstat()`, nothing more.
+
+- `u` refreshes the **row under the cursor**, and `U` refreshes the
+  **current directory**, mirroring `c`/`C` (§5.2). Above the pairing
+  (§4.3.1), `u` refreshes the pairing's root, the same as `U` from
+  inside it.
+- **Refreshing a row** named *X* in directory *P* re-lists *P* on both
+  sides, since a listing of the parent is the only way to learn that *X*
+  is gone, has changed type, or now exists on a side it was missing
+  from. Only the entries named *X* are taken from that listing; *P*'s
+  other rows are left as they are. Every row named *X*, of any type
+  (§3.1), is replaced with whatever the new listing contains under that
+  name, which may be nothing. For a directory, everything beneath it is
+  read again from scratch.
+- **Refreshing the current directory** *D* is refreshing *D*'s own row
+  in its parent, as above: *D* is re-read along with all of its entries,
+  which picks up entries that are new since *D* was last read, and if *D*
+  is gone on a side, that shows too. A pairing's root has no parent
+  within the pairing, so it is re-listed in place instead. A root that
+  has disappeared lists as empty, the same as any missing directory
+  (§4.3), so everything on the other side shows as one-sided.
+- **Nothing carries over.** A refreshed entry is a newly discovered one,
+  and gets exactly what newly discovered entries get: listing, and then
+  whatever `--level` applies to the tree in the background (§2.1). Under
+  `--level=none` that is listing alone. Verdicts reached earlier by a
+  manual `c`/`C` are discarded with the old rows, as are triggers still
+  waiting to reach into the refreshed subtree, including a recursive one
+  armed on an ancestor. A deeper comparison has to be triggered again.
+  Without this, a refresh would have to guess which earlier triggers are
+  still wanted, and on a large subtree an unasked-for content compare is
+  expensive.
+- **It applies to every pairing.** Listing and metadata belong to the
+  side trees (§3), so a refresh replaces the entries in every open
+  pairing that covers them, root pairing included. The content verdicts
+  those pairings held for the replaced files are discarded too, since
+  they describe files that may no longer exist.
+- **Old work is retired.** Jobs still queued for the replaced entries,
+  in either pool and in every namespace (§8.3), are dropped. Jobs
+  already running finish, and their results are discarded rather than
+  applied to the new entries (the same "let it finish" rule as §4.9's
+  lifetime).
+- **Old rows stay until the new listing lands.** A refresh doesn't blank
+  the rows it replaces. They stay on screen with the listing-pending
+  indicator (§6) until the new listing has arrived on every side, and
+  are then swapped in one step. An entry that still exists keeps its
+  row, which goes back to unknown; one whose presence changed gets a
+  new row. This is the same "no flashing" rule §3
+  gives for presence. Below that level, the rebuilt subtree fills in the
+  way any newly discovered directory does.
+- **Cursor and view.** After the swap, the cursor stays on the row with
+  the same (name, type) if one still exists; otherwise it stays at the
+  same position, clamped to the list. If the directory being viewed is
+  gone on both sides, the view moves up to the nearest ancestor that
+  still exists on at least one side. One-sided directories stay
+  navigable (§4.3).
+
+A row's presence is still fixed when the row is created (§3). A refresh
+never changes a row's presence; it replaces the row. That is also why a
+refresh is the only way a result ever goes back to unknown (§5.3).
 
 ## 6. Status indicators
 
@@ -603,8 +672,9 @@ On startup:
 Two separate pools:
 
 - **Listing pool** — ambient discovery: directory reads (`readdir`) for
-  the BFS traversal. Small, fast jobs; sized to stay responsive even under
-  load from the other pool.
+  the BFS traversal, and the re-reads a refresh (§5.5) asks for. Small,
+  fast jobs; sized to stay responsive even under load from the other
+  pool.
 - **Examination pool** — triggered work: the per-side `lstat()` calls of
   the metadata level and the byte-wise content comparisons. This is where
   expensive, I/O-heavy work happens.
@@ -697,6 +767,8 @@ plus the full reference via `?` (§4.5).
 | `w` | Open the worker-count popup: resize the scan/compare pools live (§4.8) |
 | `c` | Compare the selected row at the current level/recursive setting |
 | `C` | Compare the current directory at the current level/recursive setting |
+| `u` | Refresh the selected row: re-read it (and its subtree) from disk, picking up changes and removals (§5.5) |
+| `U` | Refresh the current directory, including entries new since it was read (§5.5) |
 | `s` | Start choosing a sub-compare; while choosing, cancel it (§4.9) |
 | `Space` | While choosing a sub-compare, take the highlighted directory for the side being chosen (§4.9) |
 | `Esc` | While choosing a sub-compare, cancel (§4.9) |
@@ -710,6 +782,8 @@ plus the full reference via `?` (§4.5).
 - No file/directory content viewing or diffing (no "show me the actual
   byte differences" pane) — status only, not a content diff tool.
 - No delete, copy, move, rename, or any other filesystem mutation.
+- No filesystem watching or automatic refresh. Changes on disk are
+  picked up only when the user refreshes (§5.5).
 - No config file / persisted settings across runs — every run starts from
   defaults.
 - No export of diff results to a file/report.

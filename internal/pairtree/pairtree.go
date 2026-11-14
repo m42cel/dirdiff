@@ -14,6 +14,7 @@ package pairtree
 
 import (
 	"sort"
+	"sync/atomic"
 
 	"github.com/m42cel/dirdiff/internal/diffmodel"
 	"github.com/m42cel/dirdiff/internal/sidetree"
@@ -37,6 +38,12 @@ type Node struct {
 	PairRel  string
 	Parent   *Node
 	Children []*Node
+
+	// Gen identifies this row's comparison state as it currently stands,
+	// the same way sidetree.Node.Gen does for what was read: unique when
+	// the row is created and renewed by Reset. A content job carries it,
+	// so a verdict that lands after a refresh is recognisably stale.
+	Gen uint64
 
 	// Level is the deepest CompareLevel actually run for a file/symlink
 	// node. For a directory, it's rolled up instead (see rollupLevel):
@@ -94,6 +101,11 @@ type Node struct {
 	// reads them straight off its side nodes (see SideTotals).
 	descMatches [diffmodel.RowStatusCount]int32
 }
+
+// lastGen hands out Node.Gen values; see sidetree's for why it's atomic.
+var lastGen atomic.Uint64
+
+func newGen() uint64 { return lastGen.Add(1) }
 
 // Presence reports which side(s) this row exists on. It's derived from
 // the two side pointers rather than stored, and fixed once the node is
@@ -372,6 +384,7 @@ func Merge(n *Node) (added []*Node) {
 			Left: s.left, Right: s.right,
 			Type:    k.typ,
 			PairRel: childPairRel(n, k.name),
+			Gen:     newGen(),
 		}
 		delta.add(linkChild(n, child))
 		added = append(added, child)
@@ -458,6 +471,32 @@ func ApplyCompareResult(n *Node, level diffmodel.CompareLevel, result diffmodel.
 	// equal or differing (or equal to differing, when a deeper level
 	// overrides a shallower verdict). The ancestors' tallies count
 	// descendants only, so the delta starts at the parent.
+	delta := before.negated()
+	delta.add(ownContribution(n))
+	adjustTalliesUpward(n.Parent, delta)
+	recomputeResultUpward(n.Parent)
+}
+
+// Reset discards everything concluded or asked for about n, because a
+// refresh is about to re-read its sides (SPEC.md §5.5). A file or
+// symlink goes back to not compared, its outstanding content job is
+// uncounted, and its new Gen makes that job's verdict stale. A
+// directory's own result is a rollup of its children, which a refresh
+// deals with one by one, so for it this only clears the triggers armed
+// on it.
+//
+// It is not a downgrade in the §5.3 sense: the row's sides are being
+// re-read, so nothing it said about them still holds.
+func Reset(n *Node) {
+	n.ArmedLevel = diffmodel.NotCompared
+	n.PendingRecursiveLevel = diffmodel.NotCompared
+	if n.IsDir() {
+		return
+	}
+	before := ownContribution(n)
+	n.Level, n.LevelMixed, n.Result, n.Err = diffmodel.NotCompared, false, diffmodel.Unknown, nil
+	AdjustPendingCompare(n, -n.PendingCompare)
+	n.Gen = newGen()
 	delta := before.negated()
 	delta.add(ownContribution(n))
 	adjustTalliesUpward(n.Parent, delta)

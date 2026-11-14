@@ -382,6 +382,28 @@ func (q *Queue[T]) ClearPrefix(prefix string) []string {
 	return dropped
 }
 
+// Remove drops the not-yet-started jobs queued under exactly these keys
+// and returns the keys it actually dropped. Unlike ClearPrefix it never
+// reaches below a key: a file and a directory of the same name share a
+// path (SPEC.md §3.1), so dropping one row's subtree by prefix could
+// take an unrelated row's job with it. In-flight jobs are unaffected.
+func (q *Queue[T]) Remove(keys ...string) []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var dropped []string
+	for _, k := range keys {
+		it, ok := q.byKey[k]
+		if !ok {
+			continue
+		}
+		heap.Remove(&q.heap, it.index)
+		delete(q.byKey, k)
+		dropped = append(dropped, k)
+	}
+	return dropped
+}
+
 // Close unblocks all workers currently waiting in Pop, which then return
 // ok=false.
 func (q *Queue[T]) Close() {

@@ -175,6 +175,12 @@ func drainPending(t *testing.T, s *Session) {
 // rather than what the background scan was still doing.
 func settle(t *testing.T, s *Session) {
 	t.Helper()
+	new(counts).settle(t, s)
+}
+
+// settle is settle, counting what it applies.
+func (c *counts) settle(t *testing.T, s *Session) {
+	t.Helper()
 	idle := func() bool {
 		st := s.Stats()
 		return st.ListPending == 0 && st.ListActive == 0 && st.CmpPending == 0 && st.CmpActive == 0
@@ -184,17 +190,20 @@ func settle(t *testing.T, s *Session) {
 		if idle() {
 			// A result still sitting in a channel can enqueue follow-up
 			// work, so an idle queue isn't settled until those are applied.
-			drainPending(t, s)
+			c.drain(t, s)
 			if idle() {
 				return
 			}
 		}
 		select {
 		case r := <-s.ListResults():
+			c.lists++
 			s.OnListResult(r)
 		case r := <-s.StatResults():
+			c.stats++
 			s.OnStatResult(r)
 		case r := <-s.CompareResults():
+			c.compares++
 			s.OnCompareResult(r)
 		case <-deadline:
 			t.Fatal("timed out waiting for the session to settle")
@@ -611,7 +620,7 @@ func TestStatResultAfterAContentVerdictKeepsTheVerdict(t *testing.T) {
 	defer s.Close()
 
 	for _, sd := range diffmodel.Sides {
-		s.OnListResult(scan.ListResult{Side: sd, RelPath: "", Entries: []diffmodel.ListedEntry{
+		s.OnListResult(scan.ListResult{Side: sd, RelPath: "", Gen: s.sides[sd].tree.Root.Gen, Entries: []diffmodel.ListedEntry{
 			{Name: "f.txt", Type: diffmodel.File},
 		}})
 	}
@@ -621,10 +630,10 @@ func TestStatResultAfterAContentVerdictKeepsTheVerdict(t *testing.T) {
 	}
 
 	s.OnCompareResult(CompareResult{CompareOutcome: scan.CompareOutcome{
-		RelPath: "f.txt", Level: diffmodel.Content, Result: diffmodel.Same,
+		RelPath: "f.txt", Gen: n.Gen, Level: diffmodel.Content, Result: diffmodel.Same,
 	}})
 	for _, sd := range diffmodel.Sides {
-		s.OnStatResult(scan.StatResult{Side: sd, RelPath: "f.txt", Size: 2048, Mtime: time.Unix(int64(sd), 0)})
+		s.OnStatResult(scan.StatResult{Side: sd, RelPath: "f.txt", Gen: s.sides[sd].tree.Index["f.txt"].Gen, Size: 2048, Mtime: time.Unix(int64(sd), 0)})
 	}
 
 	if n.Level != diffmodel.Content || n.Result != diffmodel.Same {

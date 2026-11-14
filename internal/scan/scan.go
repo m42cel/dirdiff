@@ -25,7 +25,13 @@ type ListJob struct {
 	Side    diffmodel.Side
 	RelPath string
 	Abs     string
+	Gen     uint64
 }
+
+// Gen, on every job here, is the caller's own token, echoed back
+// unchanged on the result. Nothing in this package reads it; the caller
+// uses it to recognise a result for an entry that has been re-read (or
+// removed) since the job was created, which a path alone can't tell.
 
 // ListResult is the outcome of a ListJob. Err is set only for a read
 // failure other than "doesn't exist" (e.g. permission denied) — a
@@ -34,6 +40,7 @@ type ListJob struct {
 type ListResult struct {
 	Side    diffmodel.Side
 	RelPath string
+	Gen     uint64
 	Entries []diffmodel.ListedEntry
 	Err     error
 }
@@ -46,7 +53,7 @@ func DoList(job ListJob) ListResult {
 	sort.Slice(entries, func(i, j int) bool {
 		return diffmodel.EntryLess(entries[i].Name, entries[i].Type, entries[j].Name, entries[j].Type)
 	})
-	return ListResult{Side: job.Side, RelPath: job.RelPath, Entries: entries, Err: err}
+	return ListResult{Side: job.Side, RelPath: job.RelPath, Gen: job.Gen, Entries: entries, Err: err}
 }
 
 // readDirTyped lists dir, classifying each entry as File, Dir, or
@@ -80,11 +87,13 @@ type CompareJob struct {
 	LeftAbs, RightAbs string
 	Type              diffmodel.EntryType
 	Level             diffmodel.CompareLevel
+	Gen               uint64
 }
 
 // CompareOutcome is the result of a CompareJob.
 type CompareOutcome struct {
 	RelPath string
+	Gen     uint64
 	Level   diffmodel.CompareLevel
 	Result  diffmodel.CompareResult
 	Err     error
@@ -96,6 +105,12 @@ type CompareOutcome struct {
 // needs no job at all, and a symlink is compared by its target string
 // the same way (SPEC.md §7) — neither ever opens a file.
 func DoCompare(job CompareJob) CompareOutcome {
+	out := doCompare(job)
+	out.Gen = job.Gen
+	return out
+}
+
+func doCompare(job CompareJob) CompareOutcome {
 	leftInfo, err := os.Lstat(job.LeftAbs)
 	if err != nil {
 		return CompareOutcome{RelPath: job.RelPath, Level: job.Level, Result: diffmodel.CompareError, Err: err}
@@ -133,6 +148,7 @@ type StatJob struct {
 	RelPath string
 	Abs     string
 	Type    diffmodel.EntryType
+	Gen     uint64
 }
 
 // StatResult is the outcome of a StatJob. Unlike a listing, a missing
@@ -141,6 +157,7 @@ type StatJob struct {
 type StatResult struct {
 	Side       diffmodel.Side
 	RelPath    string
+	Gen        uint64
 	Size       int64
 	Mtime      time.Time
 	LinkTarget string // symlinks only (SPEC.md §7)
@@ -151,7 +168,7 @@ type StatResult struct {
 // which is the whole of what a symlink can be compared by since the
 // link is never followed (SPEC.md §7).
 func DoStat(job StatJob) StatResult {
-	out := StatResult{Side: job.Side, RelPath: job.RelPath}
+	out := StatResult{Side: job.Side, RelPath: job.RelPath, Gen: job.Gen}
 	info, err := os.Lstat(job.Abs)
 	if err != nil {
 		out.Err = err

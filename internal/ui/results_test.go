@@ -103,11 +103,11 @@ func TestWaitResultsHandlesACloseMidDrain(t *testing.T) {
 // Every result in a batch has to reach the session — batching is a
 // rendering optimization, not a place where results get dropped.
 func TestUpdateAppliesEveryResultInABatch(t *testing.T) {
-	m, _ := newTestModel(t)
+	m, sess := newTestModel(t)
 
 	next, _ := m.Update(listResultsMsg{[]scan.ListResult{
-		{Side: diffmodel.Left, RelPath: "", Entries: entries("both.txt", "left.txt")},
-		{Side: diffmodel.Right, RelPath: "", Entries: entries("both.txt")},
+		{Side: diffmodel.Left, RelPath: "", Gen: genOf(sess, diffmodel.Left, ""), Entries: entries("both.txt", "left.txt")},
+		{Side: diffmodel.Right, RelPath: "", Gen: genOf(sess, diffmodel.Right, ""), Entries: entries("both.txt")},
 	}})
 	m = next.(Model)
 

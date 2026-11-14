@@ -247,3 +247,22 @@ func TestDoCompareUnreadableFileIsError(t *testing.T) {
 		t.Fatal("Err = nil; want non-nil")
 	}
 }
+
+// Gen is the caller's token for recognising stale results; every job
+// kind has to hand it back untouched.
+func TestJobsEchoTheirGen(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "f")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := DoList(ListJob{Abs: dir, Gen: 7}).Gen; got != 7 {
+		t.Errorf("list Gen = %d; want 7", got)
+	}
+	if got := DoStat(StatJob{Abs: f, Type: diffmodel.File, Gen: 8}).Gen; got != 8 {
+		t.Errorf("stat Gen = %d; want 8", got)
+	}
+	if got := DoCompare(CompareJob{LeftAbs: f, RightAbs: f, Level: diffmodel.Content, Gen: 9}).Gen; got != 9 {
+		t.Errorf("compare Gen = %d; want 9", got)
+	}
+}

@@ -53,7 +53,18 @@ func listBoth(sess *session.Session, relPath string, spec ...string) {
 // listSide feeds one side's listing alone, for entries that exist on
 // only one of the two trees.
 func listSide(sess *session.Session, sd diffmodel.Side, relPath string, spec ...string) {
-	sess.OnListResult(scan.ListResult{Side: sd, RelPath: relPath, Entries: entries(spec...)})
+	sess.OnListResult(scan.ListResult{Side: sd, RelPath: relPath, Gen: genOf(sess, sd, relPath), Entries: entries(spec...)})
+}
+
+// genOf is the Gen a job for relPath on one side would have carried, so
+// a hand-built result isn't dropped as stale.
+func genOf(sess *session.Session, sd diffmodel.Side, relPath string) uint64 {
+	if n, ok := sess.Node(relPath); ok {
+		if sn := n.Side(sd); sn != nil {
+			return sn.Gen
+		}
+	}
+	return 0
 }
 
 // statBoth feeds each side's metadata for one row, which is what a
@@ -61,7 +72,7 @@ func listSide(sess *session.Session, sd diffmodel.Side, relPath string, spec ...
 func statBoth(sess *session.Session, relPath string, leftSize, rightSize int64) {
 	sizes := [2]int64{diffmodel.Left: leftSize, diffmodel.Right: rightSize}
 	for _, sd := range diffmodel.Sides {
-		sess.OnStatResult(scan.StatResult{Side: sd, RelPath: relPath, Size: sizes[sd], Mtime: time.Unix(1, 0)})
+		sess.OnStatResult(scan.StatResult{Side: sd, RelPath: relPath, Gen: genOf(sess, sd, relPath), Size: sizes[sd], Mtime: time.Unix(1, 0)})
 	}
 }
 

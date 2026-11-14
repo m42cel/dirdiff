@@ -80,6 +80,16 @@ type Session struct {
 	pairings    map[PairingID]*pairtree.Pairing
 	nextPairing PairingID
 
+	// autoLevel is --level: what everything discovered is compared at in
+	// the background, a refreshed entry included (SPEC.md §5.5).
+	autoLevel diffmodel.CompareLevel
+
+	// refreshing maps each directory a refresh is re-listing, per side,
+	// to the refresh it belongs to; refreshes counts the refreshes
+	// applied so far (see Refreshes).
+	refreshing [2]map[*sidetree.Node]*refresh
+	refreshes  uint64
+
 	listQ    *workqueue.Queue[scan.ListJob]
 	examineQ *workqueue.Queue[examineJob]
 
@@ -124,8 +134,13 @@ func New(leftRoot, rightRoot string, listWorkers, compareWorkers int, autoLevel 
 		},
 		pairings:    map[PairingID]*pairtree.Pairing{RootPairing: pairtree.NewPairing(left.Root, right.Root)},
 		nextPairing: RootPairing + 1,
-		listQ:       workqueue.New[scan.ListJob](),
-		examineQ:    workqueue.New[examineJob](),
+		autoLevel:   autoLevel,
+		refreshing: [2]map[*sidetree.Node]*refresh{
+			diffmodel.Left:  {},
+			diffmodel.Right: {},
+		},
+		listQ:    workqueue.New[scan.ListJob](),
+		examineQ: workqueue.New[examineJob](),
 		// Buffered so workers never block handing off a result while the
 		// UI is busy processing the previous one.
 		listResults: make(chan scan.ListResult, 64),
@@ -177,6 +192,9 @@ func (s *Session) OpenPairing(left, right *sidetree.Node) (PairingID, error) {
 		return 0, fmt.Errorf("a sub-compare needs a directory on each side")
 	case !left.IsDir() || !right.IsDir():
 		return 0, fmt.Errorf("a sub-compare pairs two directories, not files")
+	case !s.sides[diffmodel.Left].tree.Contains(left) || !s.sides[diffmodel.Right].tree.Contains(right):
+		// Chosen before a refresh found it gone.
+		return 0, fmt.Errorf("that directory no longer exists")
 	}
 	id := s.nextPairing
 	s.nextPairing++
@@ -350,6 +368,7 @@ func (s *Session) enqueueList(sd diffmodel.Side, n *sidetree.Node) {
 		Side:    sd,
 		RelPath: n.RelPath,
 		Abs:     scan.AbsPath(s.sides[sd].root, n.RelPath),
+		Gen:     n.Gen,
 	}, nil)
 	if created {
 		sidetree.AdjustPendingListing(n, 1)
@@ -370,6 +389,7 @@ func (s *Session) enqueueStat(sd diffmodel.Side, n *sidetree.Node) {
 		RelPath: n.RelPath,
 		Abs:     scan.AbsPath(s.sides[sd].root, n.RelPath),
 		Type:    n.Type,
+		Gen:     n.Gen,
 	}, isStat: true}, nil)
 	if created {
 		sidetree.AdjustPendingStat(n, 1)
@@ -401,10 +421,22 @@ func (s *Session) Node(relPath string) (*pairtree.Node, bool) {
 // the other side becomes a row, and a directory armed for a recursive
 // compare that started before it was listed has that comparison applied
 // to its new children now (SPEC.md §5.2/§5.4).
+//
+// A listing a refresh asked for is held instead, until every directory
+// that refresh re-lists has landed (see applyRefresh), and a listing of
+// a directory a refresh has since removed is dropped.
 func (s *Session) OnListResult(r scan.ListResult) {
 	t := s.sides[r.Side].tree
 	n, ok := t.Index[r.RelPath]
-	if !ok {
+	if !ok || n.Gen != r.Gen {
+		return
+	}
+	if rf := s.refreshing[r.Side][n]; rf != nil {
+		sidetree.AdjustPendingListing(n, -1)
+		rf.part(r.Side, n).result = &r
+		if rf.ready() {
+			s.applyRefresh(rf)
+		}
 		return
 	}
 	t.ApplyListing(n, r.Entries, r.Err)
@@ -437,9 +469,12 @@ func (s *Session) OnListResult(r scan.ListResult) {
 // on it becomes answerable: either the two sizes differ, which settles
 // it without opening a file, or they match and the job is finally worth
 // creating (SPEC.md §5.1).
+//
+// A result for an entry a refresh has since re-read or removed is
+// dropped: it may describe the file as it was before the change.
 func (s *Session) OnStatResult(r scan.StatResult) {
 	n, ok := s.sides[r.Side].tree.Index[r.RelPath]
-	if !ok {
+	if !ok || n.Gen != r.Gen {
 		return
 	}
 	sidetree.ApplyStat(n, sidetree.Stat{Size: r.Size, Mtime: r.Mtime, LinkTarget: r.LinkTarget, Err: r.Err})
@@ -463,7 +498,7 @@ func (s *Session) OnStatResult(r scan.StatResult) {
 // OnCompareResult applies a completed content comparison to the pairing
 // that asked for it, and drops it if that pairing has since been closed
 // — its rows are gone, and the verdict says nothing about any other
-// pairing's. It carries no metadata: a size is a fact about one side's
+// pairing's — or if a refresh has since reset or replaced the row. It carries no metadata: a size is a fact about one side's
 // file, which a stat job reads once into that side's tree and every
 // pairing over it then shares.
 func (s *Session) OnCompareResult(r CompareResult) {
@@ -472,7 +507,7 @@ func (s *Session) OnCompareResult(r CompareResult) {
 		return
 	}
 	n, ok := p.Row(r.RelPath)
-	if !ok {
+	if !ok || n.Gen != r.Gen {
 		return
 	}
 	pairtree.ApplyCompareResult(n, r.Level, r.Result, r.Err)
@@ -612,6 +647,7 @@ func (s *Session) enqueueCompare(id PairingID, n *pairtree.Node, level diffmodel
 		RightAbs: scan.AbsPath(s.sides[diffmodel.Right].root, n.Right.RelPath),
 		Type:     n.Type,
 		Level:    level,
+		Gen:      n.Gen,
 	}}
 	created := s.examineQ.Upsert(pairKey(id, n.PairRel), job, func(old examineJob) examineJob {
 		if level > old.compare.Level {

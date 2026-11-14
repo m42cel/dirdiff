@@ -8,6 +8,7 @@ package ui
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -161,6 +162,10 @@ type Model struct {
 	spinnerFrame   int
 	spinnerRunning bool
 
+	// refreshes is the session's refresh count as of the last time the
+	// views were checked against it (see followRefresh).
+	refreshes uint64
+
 	width, height int
 }
 
@@ -251,9 +256,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case listResultsMsg:
+		at, hadRow := m.cursorRow()
 		for _, r := range msg.rs {
 			m.sess.OnListResult(r)
 		}
+		m.followRefresh(at, hadRow)
 		m.clampCursor()
 		// Applying a listing is itself a source of new work (the
 		// children it just discovered), so the clock is restarted after
@@ -287,8 +294,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickSpinner()
 
 	case tea.KeyMsg:
+		at, hadRow := m.cursorRow()
 		tm, cmd := m.handleKey(msg)
 		m = tm.(Model)
+		// A refresh whose listings had all landed already is applied on
+		// the keypress itself.
+		m.followRefresh(at, hadRow)
 		if cmd != nil {
 			return m, cmd // quit — nothing to keep animating for
 		}
@@ -449,6 +460,10 @@ func (m Model) handleSingleKey(key string) (tea.Model, tea.Cmd) {
 		m.triggerCompare()
 	case "C":
 		m.triggerCompareDir()
+	case "u":
+		m.refreshRow()
+	case "U":
+		m.sess.Refresh(m.pairing, m.cursorDir)
 	case "s":
 		m.startSelection()
 	case "n":
@@ -610,6 +625,121 @@ func (m *Model) triggerCompareDir() {
 	m.sess.TriggerCompare(m.pairing, m.cursorDir, m.compareLevel, m.recursive)
 }
 
+// refreshRow re-reads the row under the cursor from disk ('u', SPEC.md
+// §5.5); 'U' does the same for the directory being stood in. Above the
+// root the selected row is the root pair, so 'u' there refreshes the
+// pairing's root, the same as 'U' from inside it.
+func (m *Model) refreshRow() {
+	visible := m.visibleChildren()
+	if m.cursorIdx >= len(visible) {
+		return
+	}
+	m.sess.Refresh(m.pairing, visible[m.cursorIdx])
+}
+
+// rowKey is what identifies a row across a refresh, which may replace
+// the row itself (SPEC.md §3.1's matching key).
+type rowKey struct {
+	name string
+	typ  diffmodel.EntryType
+}
+
+// cursorRow is the key of the row under the cursor, if there is one.
+func (m Model) cursorRow() (rowKey, bool) {
+	visible := m.visibleChildren()
+	if m.atRootParent || m.cursorIdx >= len(visible) {
+		return rowKey{}, false
+	}
+	n := visible[m.cursorIdx]
+	return rowKey{n.Name(), n.Type}, true
+}
+
+// followRefresh keeps every view standing somewhere real after a refresh
+// has replaced or removed rows (SPEC.md §5.5). A directory a view stands
+// in that has been replaced is found again by its path; one that's gone
+// gives way to its nearest ancestor that still exists. In the view on
+// screen the cursor then stays on the row it was on, matched by (name,
+// type) since the row may be a new one; at is that row's key from before
+// the change, if there was a row under the cursor at all.
+func (m *Model) followRefresh(at rowKey, hadRow bool) {
+	if m.sess.Refreshes() == m.refreshes {
+		return
+	}
+	m.refreshes = m.sess.Refreshes()
+	for i := range m.stack {
+		m.stack[i].relocate(m.sess)
+	}
+	if m.picking != nil {
+		picking := *m.picking
+		picking.origin.relocate(m.sess)
+		m.picking = &picking
+	}
+
+	old := m.cursorDir
+	if !m.relocate(m.sess) {
+		if !hadRow {
+			return
+		}
+		for i, c := range m.visibleChildren() {
+			if c.Name() == at.name && c.Type == at.typ {
+				m.cursorIdx = i
+				break
+			}
+		}
+		return
+	}
+	if m.cursorDir.PairRel != old.PairRel {
+		// Moved up: put the cursor on the row the old path went through.
+		next, _, _ := strings.Cut(strings.TrimPrefix(old.PairRel, prefixOf(m.cursorDir)), "/")
+		for i, c := range m.visibleChildren() {
+			if c.Name() == next {
+				m.cursorIdx = i
+				break
+			}
+		}
+	}
+	m.sess.Navigate(m.pairing, m.cursorDir)
+}
+
+// prefixOf is the path prefix every row below n shares.
+func prefixOf(n *pairtree.Node) string {
+	if n.PairRel == "" {
+		return ""
+	}
+	return n.PairRel + "/"
+}
+
+// relocate re-resolves cursorDir if a refresh has removed it, walking
+// down from the pairing's root along its old path for as long as each
+// step still exists as a directory. It reports whether cursorDir
+// changed. A pairing's root is never removed, so the walk always has
+// somewhere to start.
+func (v *view) relocate(sess *session.Session) bool {
+	p, ok := sess.Pairing(v.pairing)
+	if !ok || p.Contains(v.cursorDir) {
+		return false
+	}
+	n := v.root
+	for _, seg := range strings.Split(v.cursorDir.PairRel, "/") {
+		var next *pairtree.Node
+		for _, c := range n.Children {
+			if c.IsDir() && c.Name() == seg {
+				next = c
+				break
+			}
+		}
+		if next == nil {
+			break
+		}
+		n = next
+	}
+	if n.PairRel != v.cursorDir.PairRel {
+		v.cursorIdx, v.scrollOffset = 0, 0
+	}
+	v.cursorDir = n
+	return true
+}
+
 // startSelection begins choosing a sub-compare ('s', SPEC.md §4.9),
 // starting with its left side.
 func (m *Model) startSelection() {
@@ -683,6 +813,9 @@ func (m *Model) popSubCompare() {
 	m.sess.ClosePairing(m.pairing)
 	m.view = m.stack[len(m.stack)-1]
 	m.stack = m.stack[:len(m.stack)-1]
+	// A refresh while the sub-compare was open may have changed what the
+	// view below it stands in.
+	m.clampCursor()
 	m.sess.Navigate(m.pairing, m.cursorDir)
 }
 

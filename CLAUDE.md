@@ -161,6 +161,17 @@ Seven packages, layered bottom-up; each only depends on the ones below it:
   itself hasn't finished listing yet — `OnListResult` re-checks this flag
   every time new children appear, which is what makes a recursive compare
   reach files discovered after the trigger.
+  `Refresh` (spec §5.5, `refresh.go`) is the one place anything is ever
+  *removed* or *reset*: it re-lists a row's parent per side, holds the
+  listings until every side has landed, then applies them with
+  `sidetree.Tree.Refresh` (kept entries keep their node, vanished ones
+  are unlinked with their subtree) and `pairtree.Pairing.Refresh` (a row
+  whose presence would change is dropped and rebuilt by `Merge`, never
+  mutated), and recurses into kept directories. Because a path can
+  resolve to a newer node than the one a job was made for, every job and
+  result carries the node's `Gen` (unique per node, renewed on reset) and
+  a result whose `Gen` doesn't match is dropped; the pending counts of
+  whatever a refresh discards are unwound at that moment instead.
 - **`internal/ui`** — the Bubble Tea model. `model.go` holds cursor/nav
   state and key handling; `view.go` renders it; `style.go` has the
   lipgloss styles. `handleKey` explicitly re-splits a `tea.KeyMsg` with
